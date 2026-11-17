@@ -143,5 +143,18 @@ func DeleteSetting(c *gin.Context) {
 }
 
 func PublicSettings(c *gin.Context) {
-	common.SuccessResp(c, op.GetPublicSettingsMap())
+	settings := op.GetPublicSettingsMap()
+	if conf.IsSTRMMode() {
+		// long: 设置缓存共享给其他请求，追加产品信息必须复制，不能并发写共享map。
+		copy := make(map[string]string, len(settings)+4)
+		for k, v := range settings {
+			copy[k] = v
+		}
+		copy["strm_mode"] = "true"
+		copy["strm_product_version"] = conf.ProductVersion
+		copy["strm_upstream_commit"] = conf.UpstreamCommit
+		copy["strm_frontend_commit"] = conf.FrontendCommit
+		settings = copy
+	}
+	common.SuccessResp(c, settings)
 }

@@ -1,3 +1,5 @@
+//go:build !strm_product
+
 package public
 
 import "embed"

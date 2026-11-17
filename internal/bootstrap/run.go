@@ -15,6 +15,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/fs"
+	"github.com/OpenListTeam/OpenList/v4/internal/strm"
 	"github.com/OpenListTeam/OpenList/v4/internal/transcode"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/OpenListTeam/OpenList/v4/server"
@@ -38,6 +39,14 @@ func Init() {
 	InitStreamLimit()
 	InitIndex()
 	InitUpgradePatch()
+	if conf.IsSTRMMode() {
+		conf.STRMOutputMu.Lock()
+		conf.STRMOutputPath = conf.Conf.STRM.OutputRoot
+		conf.STRMOutputMu.Unlock()
+		if err := strm.Initialize(conf.DataDir, conf.Conf.STRM.OutputRoot); err != nil {
+			utils.Log.Fatal(err)
+		}
+	}
 }
 
 func Release() {
@@ -90,7 +99,9 @@ func Start() {
 		utils.Log.Infof("delayed start for %d seconds", conf.Conf.DelayedStart)
 		time.Sleep(time.Duration(conf.Conf.DelayedStart) * time.Second)
 	}
-	InitOfflineDownloadTools()
+	if !conf.IsSTRMMode() {
+		InitOfflineDownloadTools()
+	}
 	LoadStorages()
 	InitTaskManager()
 	// 初始化转码模块（总开关关时也会启动 manager，但本地 worker 仅在 enabled 时由 Manager.Start 内部按 run_mode 启动）
@@ -102,13 +113,21 @@ func Start() {
 	}
 	r := gin.New()
 
-	// gin log
-	if conf.Conf.Log.Filter.Enable {
+	// long: 产品日志优先于旧过滤配置，防止过滤器把签名查询串重新拼进日志。
+	if conf.IsSTRMMode() {
+		r.Use(gin.LoggerWithConfig(gin.LoggerConfig{Output: log.StandardLogger().Out, Formatter: func(p gin.LogFormatterParams) string {
+			return fmt.Sprintf("%s %s %d %s\n", p.Method, p.Request.URL.Path, p.StatusCode, p.Latency)
+		}}))
+	} else if conf.Conf.Log.Filter.Enable {
 		r.Use(middlewares.FilteredLogger())
 	} else {
 		r.Use(gin.LoggerWithWriter(log.StandardLogger().Out))
 	}
-	r.Use(gin.RecoveryWithWriter(log.StandardLogger().Out))
+	if conf.IsSTRMMode() {
+		r.Use(middlewares.STRMRecovery)
+	} else {
+		r.Use(gin.RecoveryWithWriter(log.StandardLogger().Out))
+	}
 
 	server.Init(r)
 	var httpHandler http.Handler = r
@@ -277,6 +296,9 @@ func Start() {
 }
 
 func Shutdown(timeout time.Duration) {
+	if conf.IsSTRMMode() {
+		strm.Stop()
+	}
 	utils.Log.Println("Shutdown server...")
 	fs.ArchiveContentUploadTaskManager.RemoveAll()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

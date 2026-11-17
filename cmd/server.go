@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/bootstrap"
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +29,12 @@ the address is defined in config file`,
 		// kill -9 is syscall. SIGKILL but can"t be catch, so don't need add it
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		<-quit
-		bootstrap.Shutdown(1 * time.Second)
+		timeout := time.Second
+		if conf.IsSTRMMode() {
+			// long: 媒体任务须在DB关闭前保存中断状态，不能沿用仅一秒的关停预算。
+			timeout = time.Duration(conf.Conf.STRM.ShutdownSeconds) * time.Second
+		}
+		bootstrap.Shutdown(timeout)
 	},
 }
 

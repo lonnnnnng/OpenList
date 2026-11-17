@@ -1,0 +1,11 @@
+{
+  "productVersion": "v0.1.0-dev",
+  "backendBase": "de1cdb3a054628f32c410a79571848c052ce7cc2",
+  "frontendRepository": "https://github.com/OpenListTeam/OpenList-Frontend.git",
+  "frontendCommit": "9a57baf8690dbdb934d64995159d257b4b416ec8",
+  "goVersion": "go1.27.4",
+  "nodeVersion": "v26.12.1",
+  "pnpmVersion": "11.28.11",
+  "frontendLockSHA256": "c7123f89089b44545c728be2bdcf92a4cb528d17028b817a357c4489df4f0974",
+  "runtimeImage": "gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab"
+}

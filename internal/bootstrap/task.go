@@ -18,6 +18,10 @@ func taskFilterNegative(num int) int64 {
 }
 
 func InitTaskManager() {
+	if conf.IsSTRMMode() {
+		initInactiveTaskManagers()
+		return
+	}
 	fs.UploadTaskManager = tache.NewManager[*fs.UploadTask](tache.WithWorks(setting.GetInt(conf.TaskUploadThreadsNum, conf.Conf.Tasks.Upload.Workers)), tache.WithMaxRetry(conf.Conf.Tasks.Upload.MaxRetry)) //upload will not support persist
 	op.RegisterSettingChangingCallback(func() {
 		fs.UploadTaskManager.SetWorkersNumActive(taskFilterNegative(setting.GetInt(conf.TaskUploadThreadsNum, conf.Conf.Tasks.Upload.Workers)))
@@ -55,4 +59,20 @@ func InitTaskManager() {
 	saveOpts := tache.DefaultOptions()
 	saveOpts.Running = false
 	fs.SeedSaveTaskManager = tache.NewManager[*fs.SeedSaveTask](tache.WithOptions(*saveOpts))
+}
+
+// initInactiveTaskManagers 保留上游对象，不恢复写任务、不注册启用回调、不清理temp。作者：long
+func initInactiveTaskManagers() {
+	opts := tache.DefaultOptions()
+	opts.Running, opts.Works = false, 0
+	option := tache.WithOptions(*opts)
+	fs.UploadTaskManager = tache.NewManager[*fs.UploadTask](option)
+	fs.CopyTaskManager = tache.NewManager[*fs.FileTransferTask](option)
+	fs.MoveTaskManager = tache.NewManager[*fs.FileTransferTask](option)
+	tool.DownloadTaskManager = tache.NewManager[*tool.DownloadTask](option)
+	tool.TransferTaskManager = tache.NewManager[*tool.TransferTask](option)
+	fs.ArchiveDownloadTaskManager = tache.NewManager[*fs.ArchiveDownloadTask](option)
+	fs.ArchiveContentUploadTaskManager.Manager = tache.NewManager[*fs.ArchiveContentUploadTask](option)
+	fs.SeedGenerateTaskManager = tache.NewManager[*fs.SeedGenerateTask](option)
+	fs.SeedSaveTaskManager = tache.NewManager[*fs.SeedSaveTask](option)
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/net"
+	"github.com/OpenListTeam/OpenList/v4/internal/product"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/caarlos0/env/v9"
 	"github.com/shirou/gopsutil/v4/mem"
@@ -35,12 +36,20 @@ func PWD() string {
 }
 
 func InitConfig() {
+	protectSTRMLogs()
 	pwd := PWD()
 	dataDir := flags.DataDir
 	if !filepath.IsAbs(dataDir) {
 		flags.DataDir = filepath.Join(pwd, flags.DataDir)
 	}
 	conf.DataDir = flags.DataDir
+	if conf.IsSTRMMode() {
+		canonical, err := product.CanonicalPath(flags.DataDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		flags.DataDir, conf.DataDir, dataDir = canonical, canonical, canonical
+	}
 	// Determine config file path: use flags.ConfigPath if provided, otherwise default to <dataDir>/config.json
 	configPath := flags.ConfigPath
 	if configPath == "" {
@@ -56,9 +65,26 @@ func InitConfig() {
 		}
 	}
 	configPath = filepath.Clean(configPath)
+	if conf.IsSTRMMode() {
+		canonical, err := product.CanonicalPath(configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		configPath = canonical
+	}
 	conf.ConfigPath = configPath
+	configExists := utils.Exists(configPath)
+	if conf.IsSTRMMode() {
+		// long: 凭据第一次写入就必须私有；既有空文件仍按损坏配置处理，不静默重置。
+		if err := product.PrivateDirectory(flags.DataDir); err != nil {
+			log.Fatal(err)
+		}
+		if err := product.PrivateFile(configPath); err != nil {
+			log.Fatal(err)
+		}
+	}
 	log.Infof("reading config file: %s", configPath)
-	if !utils.Exists(configPath) {
+	if !configExists {
 		log.Infof("config file not exists, creating default config file")
 		_, err := utils.CreateNestedFile(configPath)
 		if err != nil {
@@ -89,13 +115,31 @@ func InitConfig() {
 		if err != nil {
 			log.Fatalf("marshal config error: %+v", err)
 		}
-		err = os.WriteFile(configPath, confBody, 0o777)
+		fileMode := os.FileMode(0o777)
+		if conf.IsSTRMMode() {
+			if err = product.PrivateFile(configPath); err != nil {
+				log.Fatal(err)
+			}
+			fileMode = 0o600
+		}
+		err = os.WriteFile(configPath, confBody, fileMode)
 		if err != nil {
 			log.Fatalf("update config struct error: %+v", err)
 		}
 	}
+	protectSTRMLogs()
 	if !conf.Conf.Force {
 		confFromEnv()
+	}
+	if conf.IsSTRMMode() {
+		product.RestrictNewFiles()
+		conf.ApplySTRMPreset(conf.Conf, flags.DataDir)
+		if err := product.PrivateDirectory(flags.DataDir); err != nil {
+			log.Fatal(err)
+		}
+		if err := product.PrivateFile(configPath); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if conf.Conf.MaxConcurrency > math.MaxInt32 {
@@ -156,12 +200,25 @@ func InitConfig() {
 	convertAbsPath(&conf.Conf.TempDir)
 	convertAbsPath(&conf.Conf.BleveDir)
 	convertAbsPath(&conf.Conf.DistDir)
+	convertAbsPath(&conf.Conf.STRM.OutputRoot)
+	if conf.IsSTRMMode() {
+		// long: 记录真实输出/数据库位置，后续不能沿可变的父级别名写到另一个目录。
+		for _, path := range []*string{&conf.Conf.STRM.OutputRoot, &conf.Conf.Database.DBFile} {
+			canonical, err := product.CanonicalPath(*path)
+			if err != nil {
+				log.Fatal(err)
+			}
+			*path = canonical
+		}
+	}
 
 	err := os.MkdirAll(conf.Conf.TempDir, 0o777)
 	if err != nil {
 		log.Fatalf("create temp dir error: %+v", err)
 	}
-	log.Debugf("config: %+v", conf.Conf)
+	if !conf.IsSTRMMode() {
+		log.Debugf("config: %+v", conf.Conf)
+	}
 
 	// Validate and display proxy configuration status
 	validateProxyConfig()
@@ -209,6 +266,15 @@ func CleanTempDir() {
 // validateProxyConfig validates proxy configuration and displays status at startup
 func validateProxyConfig() {
 	if conf.Conf.ProxyAddress != "" {
+		if conf.IsSTRMMode() {
+			// long: URL解析错误也可能带出认证信息；产品启动只报告配置状态，不回显代理地址或解析原文。
+			if _, err := url.Parse(conf.Conf.ProxyAddress); err != nil {
+				log.Error("Invalid proxy address format; check private config")
+			} else {
+				log.Info("Proxy enabled")
+			}
+			return
+		}
 		if _, err := url.Parse(conf.Conf.ProxyAddress); err == nil {
 			log.Infof("Proxy enabled: %s", conf.Conf.ProxyAddress)
 		} else {

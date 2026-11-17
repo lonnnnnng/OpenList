@@ -241,6 +241,10 @@ func StrmTargets(item *model.MediaItem) []StrmTarget {
 
 // GenerateStrmForItems 为一组条目生成 STRM 文件，返回写入数量
 func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts StrmOptions) (int, error) {
+	// long: 旧生成器经VFS写入可能落到网盘；产品只能走本地受管写入器。
+	if conf.IsSTRMMode() {
+		return 0, fmt.Errorf("legacy STRM generation is disabled in product mode")
+	}
 	if !opts.SameDir && opts.OutputPath == "" {
 		return 0, fmt.Errorf("strm output path is empty")
 	}
@@ -318,6 +322,9 @@ func GenerateStrmForType(ctx context.Context, mediaType model.MediaType, scanPat
 
 // TriggerStrmOnScan 扫描结束后按需异步生成 STRM
 func TriggerStrmOnScan(mediaType model.MediaType, apiRoot string) {
+	if conf.IsSTRMMode() {
+		return
+	}
 	if !setting.GetBool(conf.MediaStrmOnScan) {
 		return
 	}

@@ -165,7 +165,10 @@ func (m *Manager) startLocalWorker() {
 }
 
 // IsEnabled 总开关
-func IsEnabled() bool { return setting.GetBool(conf.TranscodeEnabled) }
+func IsEnabled() bool {
+	// long: 中间件只提供媒体源，旧设置不能启动本地FFmpeg或转码worker。
+	return !conf.IsSTRMMode() && setting.GetBool(conf.TranscodeEnabled)
+}
 
 // VerifyWorkerSecret 校验远程 worker 注册凭据
 func VerifyWorkerSecret(token string) bool {

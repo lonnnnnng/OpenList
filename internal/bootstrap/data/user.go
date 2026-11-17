@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
@@ -51,7 +52,11 @@ func initAdmin() {
 			} else {
 				// DO NOT output the password to log file. Only output to console.
 				// utils.Log.Infof("Successfully created the admin user and the initial password is: %s", adminPassword)
-				fmt.Printf("Successfully created the admin user and the initial password is: %s\n", adminPassword)
+				if conf.IsSTRMMode() {
+					fmt.Println("管理员账号已初始化，密码不写入日志")
+				} else {
+					fmt.Printf("Successfully created the admin user and the initial password is: %s\n", adminPassword)
+				}
 			}
 		} else {
 			utils.Log.Fatalf("[init user] Failed to get admin user: %v", err)

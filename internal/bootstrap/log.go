@@ -7,6 +7,7 @@ import (
 
 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
+	"github.com/OpenListTeam/OpenList/v4/internal/product"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/natefinch/lumberjack"
 	"github.com/sirupsen/logrus"
@@ -25,7 +26,7 @@ func init() {
 }
 
 func setLog(l *logrus.Logger) {
-	if flags.Debug || flags.Dev {
+	if !conf.IsSTRMMode() && (flags.Debug || flags.Dev) {
 		l.SetLevel(logrus.DebugLevel)
 		l.SetReportCaller(true)
 	} else {
@@ -34,7 +35,20 @@ func setLog(l *logrus.Logger) {
 	}
 }
 
+func protectSTRMLogs() {
+	if conf.IsSTRMMode() {
+		// long: InitConfig也会打印网络错误；必须在读取配置之前保护日志，重复调用不叠加formatter。
+		if _, protected := logrus.StandardLogger().Formatter.(product.RedactingFormatter); !protected {
+			logrus.SetFormatter(product.RedactingFormatter{Inner: logrus.StandardLogger().Formatter})
+		}
+		if _, protected := utils.Log.Formatter.(product.RedactingFormatter); !protected {
+			utils.Log.SetFormatter(product.RedactingFormatter{Inner: utils.Log.Formatter})
+		}
+	}
+}
+
 func Log() {
+	protectSTRMLogs()
 	setLog(logrus.StandardLogger())
 	setLog(utils.Log)
 	logConfig := conf.Conf.Log

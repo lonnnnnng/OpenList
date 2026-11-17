@@ -1,0 +1,22 @@
+name: wangpan-strm-dev
+# long: 开发演示使用独立卷；真实媒体服务器部署时按审核方案绑定宿主机library目录。
+services:
+  strm:
+    image: openlist-strm:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.strm
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      OPENLIST_STRM_PUBLIC_URL: ${STRM_PUBLIC_URL:-}
+    ports:
+      - "127.0.0.1:5344:5344"
+    volumes:
+      - strm-data:/opt/openlist/data
+      - type: bind
+        source: ${STRM_HOST_OUTPUT:-./strm-output-dev}
+        target: /data/output
+    stop_grace_period: 35s
+volumes:
+  strm-data:

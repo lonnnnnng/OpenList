@@ -112,6 +112,7 @@ type MCP struct {
 }
 
 type Config struct {
+	STRM                  STRMConfig  `json:"strm" envPrefix:"STRM_"`
 	Force                 bool        `json:"force" env:"FORCE"`
 	SiteURL               string      `json:"site_url" env:"SITE_URL"`
 	Cdn                   string      `json:"cdn" env:"CDN"`
@@ -146,7 +147,7 @@ func DefaultConfig(dataDir string) *Config {
 	indexDir := filepath.Join(dataDir, "bleve")
 	logPath := filepath.Join(dataDir, "log/log.log")
 	dbPath := filepath.Join(dataDir, "data.db")
-	return &Config{
+	c := &Config{
 		Scheme: Scheme{
 			Address:    "0.0.0.0",
 			UnixFile:   "",
@@ -257,4 +258,10 @@ func DefaultConfig(dataDir string) *Config {
 		LastLaunchedVersion: "",
 		ProxyAddress:        "",
 	}
+	if STRMCommandMode {
+		// long: 专用命令首次启动使用独立端口，不碰已有OpenList实例。
+		c.Scheme.HttpPort = 5344
+		ApplySTRMPreset(c, dataDir)
+	}
+	return c
 }

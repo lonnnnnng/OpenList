@@ -131,7 +131,8 @@ func (d *AliyundriveOpen) refreshToken(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log.Infof("[ali_open] token exchange: %s -> %s", d.RefreshToken, refresh)
+	// long: 刷新令牌会长期授权账号，运行日志只记录轮换事件，不能记录新旧令牌。
+	log.Info("[ali_open] token refreshed")
 	d.RefreshToken, d.AccessToken = refresh, access
 	op.MustSaveDriverStorage(d)
 	return nil

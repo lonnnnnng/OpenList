@@ -18,6 +18,7 @@ import (
 
 func Init(e *gin.Engine) {
 	e.ContextWithFallback = true
+	e.Use(middlewares.STRMPolicy)
 	if !utils.SliceContains([]string{"", "/"}, conf.URL.Path) {
 		e.GET("/", func(c *gin.Context) {
 			c.Redirect(302, conf.URL.Path)
@@ -31,6 +32,9 @@ func Init(e *gin.Engine) {
 	g.Any("/ping", func(c *gin.Context) {
 		c.String(200, "pong")
 	})
+	if conf.IsSTRMMode() {
+		g.GET("/ready", handles.STRMReady)
+	}
 	g.GET("/favicon.ico", handles.Favicon)
 	g.GET("/robots.txt", handles.Robots)
 	g.GET("/manifest.json", static.ManifestJSON)
@@ -40,9 +44,11 @@ func Init(e *gin.Engine) {
 	if conf.Conf.MaxConnections > 0 {
 		g.Use(middlewares.MaxAllowed(conf.Conf.MaxConnections))
 	}
-	WebDav(g.Group("/dav"))
-	S3(g.Group("/s3"))
-	MCP(g)
+	if !conf.IsSTRMMode() {
+		WebDav(g.Group("/dav"))
+		S3(g.Group("/s3"))
+		MCP(g)
+	}
 
 	downloadLimiter := middlewares.DownloadRateLimiter(stream.ClientDownloadLimit)
 	signCheck := middlewares.Down(sign.Verify)
@@ -73,7 +79,7 @@ func Init(e *gin.Engine) {
 	g.GET("/tc/:job/:token/:profile/:seg", handles.TCSegment)
 
 	api := g.Group("/api")
-	auth := api.Group("", middlewares.Auth(false))
+	auth := api.Group("", middlewares.Auth(false), middlewares.STRMAdmin)
 	webauthn := api.Group("/authn", middlewares.Authn)
 
 	api.POST("/auth/login", handles.Login)
@@ -108,6 +114,7 @@ func Init(e *gin.Engine) {
 
 	// no need auth
 	public := api.Group("/public")
+	strmPublicRoutes(public)
 	public.Any("/settings", handles.PublicSettings)
 	public.GET("/media_status", handles.PublicMediaStatus)
 	// 封面代理与本地缩略图（媒体库页面使用，免鉴权）
@@ -156,7 +163,7 @@ func Init(e *gin.Engine) {
 	// 阅读器批注（登录用户私有数据；访客只读返回空列表，写入直接 403）
 	mediaPublic.GET("/annotations", handles.ListMediaAnnotationsAPI)
 	mediaPublic.POST("/annotations", handles.SyncMediaAnnotationsAPI)
-	fsAndShare(api.Group("/fs", middlewares.Auth(true)))
+	fsAndShare(api.Group("/fs", middlewares.Auth(true), middlewares.STRMAdmin))
 	_task(auth.Group("/task", middlewares.AuthNotGuest))
 	_sharing(auth.Group("/share", middlewares.AuthNotGuest))
 	admin(auth.Group("/admin", middlewares.AuthAdmin))
@@ -169,6 +176,7 @@ func Init(e *gin.Engine) {
 }
 
 func admin(g *gin.RouterGroup) {
+	strmAdminRoutes(g)
 	meta := g.Group("/meta")
 	meta.GET("/list", handles.ListMetas)
 	meta.GET("/get", handles.GetMeta)
@@ -310,7 +318,9 @@ func _fs(g *gin.RouterGroup) {
 	uploadLimiter := middlewares.UploadRateLimiter(stream.ClientUploadLimit)
 	g.PUT("/put", middlewares.FsUp, uploadLimiter, handles.FsStream)
 	g.PUT("/form", middlewares.FsUp, uploadLimiter, handles.FsForm)
-	multipartPkg.DefaultManager.StartGC() // reclaim ring files orphaned by a previous run
+	if !conf.IsSTRMMode() {
+		multipartPkg.DefaultManager.StartGC()
+	}
 	multipart := g.Group("/multipart")
 	multipart.POST("/init", middlewares.FsUp, handles.MultipartInit)
 	multipart.PUT("/chunk", uploadLimiter, handles.MultipartChunk)

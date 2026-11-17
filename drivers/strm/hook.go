@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/internal/stream"
@@ -23,6 +24,10 @@ import (
 var strmTrie = patricia.NewTrie()
 
 func UpdateLocalStrm(ctx context.Context, path string, objs []model.Obj) {
+	// long: 目录读取不能触发旧同步器无manifest保护的文件删除。
+	if conf.IsSTRMMode() {
+		return
+	}
 	path = utils.FixAndCleanPath(path)
 	updateLocal := func(driver *Strm, basePath string, objs []model.Obj) {
 		relParent := strings.TrimPrefix(basePath, utils.GetActualMountPath(driver.MountPath))

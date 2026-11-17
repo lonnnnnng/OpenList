@@ -9,6 +9,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/cmd/flags"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
+	"github.com/OpenListTeam/OpenList/v4/internal/product"
 	log "github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -18,8 +19,12 @@ import (
 )
 
 func InitDB() {
+	if conf.IsSTRMMode() && !flags.Dev && conf.Conf.Database.Type != "sqlite3" {
+		// long: 未验收的数据库不能在检查之前先连接、迁移，尤其不能碰旧远端生产库。
+		log.Fatal("STRM产品一期只支持SQLite")
+	}
 	logLevel := logger.Silent
-	if flags.Debug || flags.Dev {
+	if !conf.IsSTRMMode() && (flags.Debug || flags.Dev) {
 		logLevel = logger.Info
 	}
 	newLogger := logger.New(
@@ -29,6 +34,8 @@ func InitDB() {
 			LogLevel:                  logLevel,
 			IgnoreRecordNotFoundError: true,
 			Colorful:                  true,
+			// long: SQL日志不走logrus脱敏，产品模式禁止展开包含Cookie的参数。
+			ParameterizedQueries: conf.IsSTRMMode(),
 		},
 	)
 	gormConfig := &gorm.Config{
@@ -49,6 +56,11 @@ func InitDB() {
 			{
 				if !(strings.HasSuffix(database.DBFile, ".db") && len(database.DBFile) > 3) {
 					log.Fatalf("db name error.")
+				}
+				if conf.IsSTRMMode() {
+					if err := product.PrivateFile(database.DBFile); err != nil {
+						log.Fatal(err)
+					}
 				}
 				dB, err = gorm.Open(openSQLite(database.DBFile), gormConfig)
 			}
@@ -84,6 +96,17 @@ func InitDB() {
 		log.Fatalf("failed to connect database:%s", err.Error())
 	}
 	db.Init(dB)
+	if conf.IsSTRMMode() {
+		if err := db.MigrateSTRM(); err != nil {
+			log.Fatal(err)
+		}
+		if err := db.RecoverSTRMTrashPlans(); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if conf.IsSTRMMode() && conf.Conf.Database.Type != "sqlite3" {
+		log.Fatal("STRM产品一期只支持SQLite")
+	}
 }
 
 // appendDSNParams appends SQLite DSN query parameters while keeping the ones

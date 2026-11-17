@@ -12,6 +12,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
+	"github.com/OpenListTeam/OpenList/v4/internal/product"
 	"github.com/OpenListTeam/OpenList/v4/internal/setting"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
 	"github.com/gin-gonic/gin"
@@ -20,7 +21,8 @@ import (
 
 type StorageResp struct {
 	model.Storage
-	MountDetails *model.StorageDetails `json:"mount_details,omitempty"`
+	MountDetails      *model.StorageDetails `json:"mount_details,omitempty"`
+	ConfiguredSecrets []string              `json:"configured_secrets,omitempty"`
 }
 
 type detailWithIndex struct {
@@ -38,6 +40,9 @@ func makeStorageResp(ctx *gin.Context, storages []model.Storage) []*StorageResp 
 		ret[i] = &StorageResp{
 			Storage:      s,
 			MountDetails: nil,
+		}
+		if conf.IsSTRMMode() {
+			maskSTRMStorage(ret[i])
 		}
 		if setting.GetBool(conf.HideStorageDetailsInManagePage) {
 			continue
@@ -111,12 +116,15 @@ func CreateStorage(c *gin.Context) {
 }
 
 func UpdateStorage(c *gin.Context) {
-	var req model.Storage
+	var req struct {
+		model.Storage
+		ClearSecrets []string `json:"clear_secrets"`
+	}
 	if err := c.ShouldBind(&req); err != nil {
 		common.ErrorResp(c, err, 400)
 		return
 	}
-	if err := op.UpdateStorage(c.Request.Context(), req); err != nil {
+	if err := op.UpdateStorage(c.Request.Context(), req.Storage, req.ClearSecrets...); err != nil {
 		common.ErrorResp(c, err, 500, true)
 	} else {
 		common.SuccessResp(c)
@@ -177,7 +185,19 @@ func GetStorage(c *gin.Context) {
 		common.ErrorResp(c, err, 500, true)
 		return
 	}
+	if conf.IsSTRMMode() {
+		response := &StorageResp{Storage: *storage}
+		maskSTRMStorage(response)
+		common.SuccessResp(c, response)
+		return
+	}
 	common.SuccessResp(c, storage)
+}
+
+func maskSTRMStorage(response *StorageResp) {
+	response.Addition, response.ConfiguredSecrets = product.MaskAddition(response.Addition)
+	response.Proxy = model.Proxy{}
+	response.Status = product.Redact(response.Status)
 }
 
 func LoadAllStorages(c *gin.Context) {

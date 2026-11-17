@@ -10,10 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/product"
 	"github.com/OpenListTeam/OpenList/v4/pkg/generic_sync"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/pkg/errors"
@@ -45,6 +47,10 @@ func GetStorageByMountPath(mountPath string) (driver.Driver, error) {
 // CreateStorage Save the storage to database so storage can get an id
 // then instantiate corresponding driver and save it in memory
 func CreateStorage(ctx context.Context, storage model.Storage) (uint, error) {
+	// long: 构造驱动和写库前拒绝，不留下已启用但不可运行的配置。
+	if conf.IsSTRMMode() && !conf.STRMDriverAllowed(storage.Driver) {
+		return 0, errors.WithMessage(conf.ErrSTRMUnsupportedDriver, storage.Driver)
+	}
 	storage.Modified = time.Now()
 	storage.MountPath = utils.FixAndCleanPath(storage.MountPath)
 	var err error
@@ -99,8 +105,13 @@ func initStorage(ctx context.Context, storage model.Storage, storageDriver drive
 	storageDriver.SetStorage(storage)
 	driverStorage := storageDriver.GetStorage()
 	defer func() {
-		if err := recover(); err != nil {
-			errInfo := fmt.Sprintf("[panic] err: %v\nstack: %s\n", err, getCurrentGoroutineStack())
+		if recovered := recover(); recovered != nil {
+			errInfo := fmt.Sprintf("[panic] err: %v\nstack: %s\n", recovered, getCurrentGoroutineStack())
+			if conf.IsSTRMMode() {
+				// long: 驱动panic值可能包含授权响应；产品仅记录固定诊断，不能写入状态或日志再回显。
+				errInfo = "存储初始化异常，请检查私有配置并重试"
+				err = errors.New(errInfo)
+			}
 			log.Errorf("panic init storage: %s", errInfo)
 			driverStorage.SetStatus(errInfo)
 			MustSaveDriverStorage(storageDriver)
@@ -109,6 +120,10 @@ func initStorage(ctx context.Context, storage model.Storage, storageDriver drive
 	}()
 	// Unmarshal Addition
 	err = utils.Json.UnmarshalFromString(driverStorage.Addition, storageDriver.GetAddition())
+	if conf.IsSTRMMode() && !conf.STRMDriverAllowed(driverStorage.Driver) {
+		// long: 未纳入首发验收的驱动保留配置，但不运行Init副作用。
+		err = fmt.Errorf("driver %s is not enabled in STRM product mode", driverStorage.Driver)
+	}
 	if err == nil {
 		if ref, ok := storageDriver.(driver.Reference); ok {
 			if strings.HasPrefix(driverStorage.Remark, "ref:/") {
@@ -176,6 +191,9 @@ func EnableStorage(ctx context.Context, id uint) error {
 	if !storage.Disabled {
 		return errors.Errorf("this storage have enabled")
 	}
+	if conf.IsSTRMMode() && !conf.STRMDriverAllowed(storage.Driver) {
+		return errors.WithMessage(conf.ErrSTRMUnsupportedDriver, storage.Driver)
+	}
 	storage.Disabled = false
 	err = db.UpdateStorage(storage)
 	if err != nil {
@@ -220,13 +238,23 @@ func DisableStorage(ctx context.Context, id uint) error {
 // UpdateStorage update storage
 // get old storage first
 // drop the storage then reinitialize
-func UpdateStorage(ctx context.Context, storage model.Storage) error {
+func UpdateStorage(ctx context.Context, storage model.Storage, clearSecrets ...string) error {
+	if conf.IsSTRMMode() && !conf.STRMDriverAllowed(storage.Driver) {
+		return errors.WithMessage(conf.ErrSTRMUnsupportedDriver, storage.Driver)
+	}
 	oldStorage, err := db.GetStorageById(storage.ID)
 	if err != nil {
 		return errors.WithMessage(err, "failed get old storage")
 	}
 	if oldStorage.Driver != storage.Driver {
 		return errors.Errorf("driver cannot be changed")
+	}
+	if conf.IsSTRMMode() {
+		// long: 接口不回传原凭据，普通编辑留空时从当前记录保留；不得将浏览器的空字段写成令牌丢失。
+		storage.Addition, err = product.MergeAdditionSecrets(oldStorage.Addition, storage.Addition, clearSecrets)
+		if err != nil {
+			return err
+		}
 	}
 	storage.Modified = time.Now()
 	storage.MountPath = utils.FixAndCleanPath(storage.MountPath)

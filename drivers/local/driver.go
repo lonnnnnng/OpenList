@@ -194,11 +194,20 @@ func (d *Local) FileInfoToObj(ctx context.Context, f fs.FileInfo, reqPath string
 			Thumbnail: thumb,
 		},
 	}
+	if f.Mode()&os.ModeSymlink != 0 {
+		// long: 普通本地浏览可显示链接，但任务同步必须识别它并拒绝越出受管根目录。
+		return &localSourceLink{ObjThumb: file}
+	}
 	return &file
 }
 
+type localSourceLink struct{ model.ObjThumb }
+
+func (*localSourceLink) IsSourceSymlink() bool { return true }
+
 func (d *Local) Get(ctx context.Context, path string) (model.Obj, error) {
 	path = filepath.Join(d.GetRootPath(), path)
+	linkInfo, linkErr := os.Lstat(path)
 	f, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -230,6 +239,10 @@ func (d *Local) Get(ctx context.Context, path string) (model.Obj, error) {
 		Ctime:    ctime,
 		Size:     size,
 		IsFolder: isFolder,
+	}
+	if linkErr == nil && linkInfo.Mode()&os.ModeSymlink != 0 {
+		// long: 目录选择按需解析时也保留符号链接身份，避免只在对子目录遍历时才发现越界入口。
+		return &localSourceLink{ObjThumb: model.ObjThumb{Object: file}}, nil
 	}
 	return &file, nil
 }

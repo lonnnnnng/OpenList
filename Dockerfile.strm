@@ -1,0 +1,15 @@
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+# long: 镜像只打包已按固定工具链构建的产物，不再在线抓前端或启动辅助守护进程。
+COPY --chown=65532:65532 build/strm/runtime/ /
+COPY --chown=65532:65532 --chmod=755 build/strm/linux-amd64/openlist-strm /opt/openlist/openlist-strm
+COPY build/strm/linux-amd64/LICENSE-backend /opt/openlist/LICENSE
+COPY build/strm/linux-amd64/LICENSE-frontend /opt/openlist/LICENSE-frontend
+WORKDIR /opt/openlist
+ENV OPENLIST_HTTP_PORT=5344 OPENLIST_STRM_OUTPUT_ROOT=/data/output TZ=Asia/Shanghai
+USER 65532:65532
+EXPOSE 5344
+VOLUME ["/opt/openlist/data", "/data/output"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s CMD ["/opt/openlist/openlist-strm", "healthcheck"]
+ENTRYPOINT ["/opt/openlist/openlist-strm"]
+CMD ["strm-server", "--data", "/opt/openlist/data", "--log-std"]

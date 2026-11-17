@@ -1,0 +1,10 @@
+**
+!Dockerfile.strm
+!build/
+!build/strm/
+!build/strm/linux-amd64/
+!build/strm/linux-amd64/openlist-strm
+!build/strm/linux-amd64/LICENSE-backend
+!build/strm/linux-amd64/LICENSE-frontend
+!build/strm/runtime/
+!build/strm/runtime/**

@@ -343,6 +343,10 @@ func GetProgress(mediaType model.MediaType) model.MediaScanProgress {
 
 // ScanMedia 扫描媒体文件（异步），扫描指定媒体类型下的所有启用扫描路径
 func ScanMedia(cfg *model.MediaConfig) {
+	// long: 产品任务由自有队列管理，旧扫描不能经协议或回调旁路启动。
+	if conf.IsSTRMMode() {
+		return
+	}
 	p, ok := progressMap[cfg.MediaType]
 	if !ok {
 		return
@@ -426,6 +430,9 @@ func ScanMedia(cfg *model.MediaConfig) {
 
 // ScanMediaPath 扫描单个扫描路径（异步）
 func ScanMediaPath(sp *model.MediaScanPath) {
+	if conf.IsSTRMMode() {
+		return
+	}
 	p, ok := progressMap[sp.MediaType]
 	if !ok {
 		return
