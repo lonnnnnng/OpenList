@@ -89,13 +89,14 @@ var seasonDirRe = regexp.MustCompile(`(?i)^(第\s*[0-9一二三四五六七八�
 // isSeasonDir 判断目录名是否是「季」目录
 func isSeasonDir(name string) bool {
 	n := strings.TrimSpace(name)
-	return seasonDirRe.MatchString(n) || seasonEmbeddedCNRe.MatchString(n)
+	return seasonDirRe.MatchString(n) || seasonEmbeddedCNRe.MatchString(n) || seasonEmbeddedSRe.MatchString(n)
 }
 
 var (
 	// 第N季 / 第十二季
 	seasonCNRe         = regexp.MustCompile(`^第\s*([0-9]+|[一二三四五六七八九十两]+)\s*季`)
 	seasonEmbeddedCNRe = regexp.MustCompile(`第\s*([0-9]+|[一二三四五六七八九十两]+)\s*季`)
+	seasonEmbeddedSRe  = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])s([0-9]{1,2})(?:[^0-9a-z]|$)`)
 	// Season 1 / season.02
 	seasonENRe = regexp.MustCompile(`(?i)^season[\s._-]*([0-9]{1,2})`)
 	// S01 / s1（后面不能再跟数字或字母，避免命中 S01E01）
@@ -116,6 +117,9 @@ func seasonNumberOf(name string) int {
 			return v
 		}
 		return chineseNumber(m[1])
+	}
+	if m := seasonEmbeddedSRe.FindStringSubmatch(n); len(m) == 2 {
+		return parseLeadingInt(m[1])
 	}
 	if m := seasonENRe.FindStringSubmatch(n); len(m) == 2 {
 		return parseLeadingInt(m[1])
@@ -170,7 +174,7 @@ func seasonSubdirs(ctx context.Context, dirPath string) []string {
 		}
 	}
 	for _, name := range dirNames {
-		if isSeasonDir(name) || isInSeasonSiblingGroup(name, dirNames) {
+		if isSeasonDir(name) || (isInSeasonSiblingGroup(name, dirNames) && folderLooksLikeTV(ctx, stdpath.Join(dirPath, name))) {
 			out = append(out, name)
 		}
 	}
@@ -228,7 +232,10 @@ func isSeasonSiblingTarget(ctx context.Context, target, scanRoot string) bool {
 			siblings = append(siblings, entry.GetName())
 		}
 	}
-	return isInSeasonSiblingGroup(stdpath.Base(target), siblings)
+	if !isInSeasonSiblingGroup(stdpath.Base(target), siblings) {
+		return false
+	}
+	return folderLooksLikeTV(ctx, target)
 }
 
 // promoteSeasonTarget 把「季」目录上移一层到剧名目录。
@@ -793,7 +800,13 @@ func doScanPath(sp *model.MediaScanPath, p *ScanProgress) error {
 			if err != nil {
 				log.Warnf("build episodes error [%s]: %v", target, err)
 			}
+			if item.VideoType == videoTypeTV && len(seasons) > 0 {
+				episodes = filterEpisodesToSeasonDirs(episodes, seasons)
+			}
 			item.Episodes = episodes
+			if item.VideoType == "" && sp.MediaType == model.MediaTypeVideo && looksLikeTVCollection(item.FileName, parseEpisodes(item)) {
+				item.VideoType = videoTypeTV
+			}
 			// 固定深度按层级直接取文件夹，可能命中没有任何媒体文件的空目录，
 			// 不要为它们生成空条目
 			if recursiveEpisodes && episodes == "" {
@@ -842,6 +855,78 @@ func doScanPath(sp *model.MediaScanPath, p *ScanProgress) error {
 		}
 	}
 	return nil
+}
+
+func filterEpisodesToSeasonDirs(raw string, seasonDirs []string) string {
+	var episodes []EpisodeInfo
+	if raw == "" || json.Unmarshal([]byte(raw), &episodes) != nil {
+		return raw
+	}
+	allowed := make(map[string]struct{}, len(seasonDirs))
+	for _, name := range seasonDirs {
+		allowed[name] = struct{}{}
+	}
+	filtered := make([]EpisodeInfo, 0, len(episodes))
+	for _, episode := range episodes {
+		seasonDir, _, _ := strings.Cut(episode.FileName, "/")
+		if _, ok := allowed[seasonDir]; ok {
+			filtered = append(filtered, episode)
+		}
+	}
+	encoded, err := json.Marshal(filtered)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
+}
+
+func looksLikeTVCollection(folderName string, episodes []EpisodeInfo) bool {
+	indexes := make(map[int]struct{})
+	_, _, numberedSeason := numberedSeasonParts(folderName)
+	allowNumericNames := episodeCountHintRe.MatchString(folderName) || numberedSeason
+	for _, episode := range episodes {
+		name := strings.TrimSuffix(stdpath.Base(episode.FileName), stdpath.Ext(episode.FileName))
+		if match := episodeSxxExxRe.FindStringSubmatch(name); len(match) == 3 {
+			indexes[parseLeadingInt(match[2])] = struct{}{}
+			continue
+		}
+		if match := episodeCNRe.FindStringSubmatch(name); len(match) == 2 {
+			indexes[parseLeadingInt(match[1])] = struct{}{}
+			continue
+		}
+		if match := episodeERe.FindStringSubmatch(name); len(match) == 2 {
+			indexes[parseLeadingInt(match[1])] = struct{}{}
+			continue
+		}
+		if !allowNumericNames {
+			continue
+		}
+		if match := episodeNumRe.FindStringSubmatch(name); len(match) == 3 {
+			indexes[parseLeadingInt(match[1])] = struct{}{}
+			continue
+		}
+		if match := episodePlainNumberRe.FindStringSubmatch(name); len(match) == 2 {
+			indexes[parseLeadingInt(match[1])] = struct{}{}
+			continue
+		}
+		if match := episodeDelimitedTailRe.FindStringSubmatch(name); len(match) == 2 {
+			indexes[parseLeadingInt(match[1])] = struct{}{}
+		}
+	}
+	delete(indexes, 0)
+	return len(indexes) > 1
+}
+
+func folderLooksLikeTV(ctx context.Context, folderPath string) bool {
+	raw, err := buildEpisodesFromFolder(ctx, folderPath, model.MediaTypeVideo, false)
+	if err != nil || raw == "" {
+		return false
+	}
+	var episodes []EpisodeInfo
+	if err := json.Unmarshal([]byte(raw), &episodes); err != nil {
+		return false
+	}
+	return looksLikeTVCollection(stdpath.Base(folderPath), episodes)
 }
 
 // mediaItemSizeCheck 提前校验唯一索引列长度，避免把必然失败的行送进写库批次。
@@ -1386,11 +1471,14 @@ func buildMediaItemFromVFS(ctx context.Context, vfsPath string, sp *model.MediaS
 // episodeNumRe 匹配文件名开头的数字序号，支持 "1、" "2." "3-" "4 " 等分隔符
 var episodeNumRe = regexp.MustCompile(`^(\d+)[、.\-\s_]+(.*)`)
 var (
-	episodeSxxExxRe = regexp.MustCompile(`(?i)S(\d{1,2})\s*E(\d{1,3})`)
-	episodeCNRe     = regexp.MustCompile(`第\s*(\d{1,3})\s*[集话]`)
-	episodeERe      = regexp.MustCompile(`(?i)(?:^|\b)E(\d{1,3})(?:\b|$)`)
-	episodeTailRe   = regexp.MustCompile(`(\d{1,3})$`)
-	seasonSuffixRe  = regexp.MustCompile(`^(?:.*?)(\d{1,2})(?:季)?(?:续集.*)?$`)
+	episodeSxxExxRe        = regexp.MustCompile(`(?i)S(\d{1,2})\s*E(\d{1,3})`)
+	episodeCNRe            = regexp.MustCompile(`第\s*(\d{1,3})\s*[集话]`)
+	episodeERe             = regexp.MustCompile(`(?i)(?:^|\b)E(\d{1,3})(?:\b|$)`)
+	episodePlainNumberRe   = regexp.MustCompile(`^(\d{1,3})$`)
+	episodeDelimitedTailRe = regexp.MustCompile(`(?:^|[ ._-])(\d{1,3})$`)
+	episodeCountHintRe     = regexp.MustCompile(`\d+\s*集`)
+	episodeTailRe          = regexp.MustCompile(`(\d{1,3})$`)
+	seasonSuffixRe         = regexp.MustCompile(`^(?:.*?)(\d{1,2})(?:季)?(?:续集.*)?$`)
 )
 
 // EpisodeInfo 选集信息（定义在 model 包中，供协议层复用）

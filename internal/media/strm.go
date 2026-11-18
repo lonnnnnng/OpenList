@@ -9,6 +9,7 @@ import (
 	"fmt"
 	stdpath "path"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -57,6 +58,8 @@ type StrmTarget struct {
 	RawPath     string // 对应媒体文件的 VFS 路径
 	SameDirPath string // 与媒体文件同目录时的 .strm 路径
 }
+
+const strmWriteConcurrency = 4
 
 // strmSibling 计算与媒体文件同目录、同名的 .strm 路径
 func strmSibling(rawPath string, isDir bool) string {
@@ -221,6 +224,20 @@ func StrmTargets(item *model.MediaItem) []StrmTarget {
 				SameDirPath: strmSibling(raw, false),
 			}}
 		}
+		if item.IsFolder {
+			var out []StrmTarget
+			for _, episode := range parseEpisodes(item) {
+				raw := stdpath.Join(folder, item.FileName, episode.FileName)
+				name := strings.TrimSuffix(stdpath.Base(episode.FileName), stdpath.Ext(episode.FileName))
+				name = sanitizeName(name)
+				out = append(out, StrmTarget{
+					RelPath:     stdpath.Join(name, name+".strm"),
+					RawPath:     raw,
+					SameDirPath: strmSibling(raw, false),
+				})
+			}
+			return out
+		}
 		name := title
 		if year != "" {
 			name = fmt.Sprintf("%s (%s)", title, year)
@@ -260,12 +277,14 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 	if !opts.SameDir && opts.OutputPath == "" {
 		return 0, fmt.Errorf("strm output path is empty")
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	// 归一输出根目录，后续用它校验每个目标文件都在根目录之内
 	outRoot := ""
 	if !opts.SameDir {
 		outRoot = stdpath.Clean("/" + strings.TrimSpace(opts.OutputPath))
 	}
-	written := 0
 	allTargets := make([]struct {
 		target StrmTarget
 		item   *model.MediaItem
@@ -291,6 +310,14 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 			collisions[relPath][target.RawPath] = struct{}{}
 		}
 	}
+	writeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, strmWriteConcurrency)
+	var wg sync.WaitGroup
+	var written atomic.Int64
+	var firstErr error
+	var errOnce sync.Once
+	seenTargets := make(map[string]struct{}, len(allTargets))
 	for _, entry := range allTargets {
 		target := entry.target
 		relPath := target.RelPath
@@ -317,31 +344,63 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 		if dst == "" {
 			continue
 		}
-		if !opts.Overwrite {
-			if _, err := fs.Get(ctx, dst, &fs.GetArgs{NoLog: true}); err == nil {
-				continue
+		if _, exists := seenTargets[dst]; exists {
+			continue
+		}
+		seenTargets[dst] = struct{}{}
+		wg.Add(1)
+		go func(dst, rawPath string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-writeCtx.Done():
+				return
 			}
-		}
-		data := []byte(RenderStrmContent(opts.Template, opts.APIRoot, target.RawPath))
-		file := &stream.FileStream{
-			Ctx: ctx,
-			Obj: &model.Object{
-				Name:     stdpath.Base(dst),
-				Size:     int64(len(data)),
-				Modified: time.Now(),
-			},
-			Reader:   bytes.NewReader(data),
-			Mimetype: "text/plain",
-		}
-		if err := fs.PutDirectly(ctx, stdpath.Dir(dst), file, true); err != nil {
-			return written, fmt.Errorf("write %s: %w", dst, err)
-		}
-		if _, err := op.HandleFileContentHook(ctx, dst, data); err != nil {
-			return written, fmt.Errorf("sync local STRM %s: %w", dst, err)
-		}
-		written++
+			if writeCtx.Err() != nil {
+				return
+			}
+			if !opts.Overwrite {
+				if _, err := fs.Get(writeCtx, dst, &fs.GetArgs{NoLog: true}); err == nil {
+					return
+				}
+			}
+			data := []byte(RenderStrmContent(opts.Template, opts.APIRoot, rawPath))
+			file := &stream.FileStream{
+				Ctx: writeCtx,
+				Obj: &model.Object{
+					Name:     stdpath.Base(dst),
+					Size:     int64(len(data)),
+					Modified: time.Now(),
+				},
+				Reader:   bytes.NewReader(data),
+				Mimetype: "text/plain",
+			}
+			if err := fs.PutDirectly(writeCtx, stdpath.Dir(dst), file, true); err != nil {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("write %s: %w", dst, err)
+					cancel()
+				})
+				return
+			}
+			if _, err := op.HandleFileContentHook(writeCtx, dst, data); err != nil {
+				errOnce.Do(func() {
+					firstErr = fmt.Errorf("sync local STRM %s: %w", dst, err)
+					cancel()
+				})
+				return
+			}
+			written.Add(1)
+		}(dst, target.RawPath)
 	}
-	return written, nil
+	wg.Wait()
+	if firstErr != nil {
+		return int(written.Load()), firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return int(written.Load()), err
+	}
+	return int(written.Load()), nil
 }
 
 func stableStrmSuffix(rawPath string) string {
@@ -353,30 +412,41 @@ func filterShadowedMediaItems(items []model.MediaItem, scanPath *model.MediaScan
 	if scanPath == nil || scanPath.MediaType != model.MediaTypeVideo || !scanPath.PathMerge {
 		return items
 	}
-	mergedRoots := make([]string, 0)
+	shadowedPaths := make(map[string]struct{})
 	for i := range items {
 		item := &items[i]
 		if item.MediaType != model.MediaTypeVideo || item.VideoType != "tv" || !item.IsFolder || item.Hidden || len(parseEpisodes(item)) == 0 {
 			continue
 		}
-		mergedRoots = append(mergedRoots, stdpath.Join(MediaItemFolder(item), item.FileName))
-	}
-	if len(mergedRoots) == 0 {
-		return items
+		root := stdpath.Join(MediaItemFolder(item), item.FileName)
+		for _, episode := range parseEpisodes(item) {
+			path := stdpath.Clean(stdpath.Join(root, episode.FileName))
+			for path != root && path != "." && path != "/" {
+				shadowedPaths[path] = struct{}{}
+				path = stdpath.Dir(path)
+			}
+		}
 	}
 	filtered := make([]model.MediaItem, 0, len(items))
 	for i := range items {
 		item := &items[i]
-		itemPath := stdpath.Join(MediaItemFolder(item), item.FileName)
-		shadowed := false
-		for _, root := range mergedRoots {
-			if itemPath != root && strings.HasPrefix(itemPath, strings.TrimSuffix(root, "/")+"/") {
-				shadowed = true
-				break
-			}
-		}
-		if !shadowed {
+		itemPath := stdpath.Clean(stdpath.Join(MediaItemFolder(item), item.FileName))
+		if _, shadowed := shadowedPaths[itemPath]; !shadowed {
 			filtered = append(filtered, *item)
+		}
+	}
+	return filtered
+}
+
+func filterPathMergeMediaItems(items []model.MediaItem, scanPath *model.MediaScanPath, currentTargets map[string]struct{}) []model.MediaItem {
+	if scanPath == nil || scanPath.MediaType != model.MediaTypeVideo || !scanPath.PathMerge {
+		return items
+	}
+	filtered := make([]model.MediaItem, 0, len(items))
+	for _, item := range items {
+		path := stdpath.Clean(stdpath.Join(MediaItemFolder(&item), item.FileName))
+		if _, ok := currentTargets[path]; ok {
+			filtered = append(filtered, item)
 		}
 	}
 	return filtered
@@ -472,6 +542,7 @@ func TriggerStrmOnScanPaths(paths []model.MediaScanPath, mediaType model.MediaTy
 				continue
 			}
 			opts := StrmOptionsForScanPath(DefaultStrmOptions(apiRoot), path)
+			opts = autoStrmOptions(opts)
 			if !opts.SameDir && opts.OutputPath == "" {
 				continue
 			}
@@ -485,6 +556,11 @@ func TriggerStrmOnScanPaths(paths []model.MediaScanPath, mediaType model.MediaTy
 	}()
 }
 
+func autoStrmOptions(opts StrmOptions) StrmOptions {
+	opts.Overwrite = false
+	return opts
+}
+
 func GenerateStrmForScanPath(ctx context.Context, mediaType model.MediaType, scanPathID uint, opts StrmOptions) (int, error) {
 	path, err := db.GetMediaScanPath(scanPathID)
 	if err != nil {
@@ -495,5 +571,41 @@ func GenerateStrmForScanPath(ctx context.Context, mediaType model.MediaType, sca
 	if err != nil {
 		return 0, err
 	}
-	return GenerateStrmForItems(ctx, filterShadowedMediaItems(filterMediaItems(items, mediaType), path), opts)
+	items = filterMediaItems(items, mediaType)
+	if path.MediaType == model.MediaTypeVideo && path.PathMerge {
+		currentTargets, err := currentPathMergeTargets(ctx, path)
+		if err != nil {
+			return 0, err
+		}
+		items = filterPathMergeMediaItems(items, path, currentTargets)
+	}
+	return GenerateStrmForItems(ctx, filterShadowedMediaItems(items, path), opts)
+}
+
+func currentPathMergeTargets(ctx context.Context, scanPath *model.MediaScanPath) (map[string]struct{}, error) {
+	targets := make(map[string]struct{})
+	seen := make(map[string]struct{})
+	visit := func(target string) error {
+		target, promoted := promoteSeasonTarget(target, scanPath.Path, scanPath.MediaType, scanPath.PathMerge)
+		if !promoted && scanPath.MediaType == model.MediaTypeVideo && scanPath.PathMerge && isSeasonSiblingTarget(ctx, target, scanPath.Path) {
+			target = stdpath.Dir(target)
+		}
+		target = stdpath.Clean(target)
+		if _, ok := seen[target]; ok {
+			return nil
+		}
+		seen[target] = struct{}{}
+		targets[target] = struct{}{}
+		return nil
+	}
+	var err error
+	if scanPath.MergeDepth > 0 {
+		err = walkMergeDepth(ctx, scanPath.Path, scanPath.MediaType, scanPath.MergeDepth, visit)
+	} else {
+		err = walkMergeFolders(ctx, scanPath.Path, scanPath.MediaType, 0, visit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return targets, nil
 }

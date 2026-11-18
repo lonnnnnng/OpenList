@@ -1,9 +1,11 @@
 package media
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"path"
 	"testing"
 
@@ -21,6 +23,30 @@ func TestStrmOptionsForScanPath(t *testing.T) {
 	got = StrmOptionsForScanPath(global, &model.MediaScanPath{})
 	if got != global {
 		t.Fatalf("empty scan path override = %#v, want global options %#v", got, global)
+	}
+}
+
+func TestAutoStrmOptionsOnlyCreateMissingFiles(t *testing.T) {
+	input := StrmOptions{APIRoot: "http://localhost:5244", OutputPath: "/quark/strm", Overwrite: true}
+	got := autoStrmOptions(input)
+	if got.Overwrite || got.APIRoot != input.APIRoot || got.OutputPath != input.OutputPath {
+		t.Fatalf("autoStrmOptions() = %#v", got)
+	}
+	if !input.Overwrite {
+		t.Fatal("autoStrmOptions() mutated its input")
+	}
+}
+
+func TestGenerateStrmForItemsReturnsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	written, err := GenerateStrmForItems(ctx, []model.MediaItem{{
+		MediaType: model.MediaTypeVideo,
+		FileName:  "movie.mp4",
+	}}, StrmOptions{OutputPath: "/strm"})
+	if written != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("GenerateStrmForItems() = (%d, %v), want (0, context.Canceled)", written, err)
 	}
 }
 
@@ -71,19 +97,56 @@ func TestStrmTargetsUseEpisodeSeasons(t *testing.T) {
 	}
 }
 
+func TestMovieFolderStrmTargetsUseEpisodeFiles(t *testing.T) {
+	item := &model.MediaItem{
+		MediaType:  model.MediaTypeVideo,
+		IsFolder:   true,
+		FolderPath: "/videos",
+		FileName:   "Movies",
+		Episodes:   `[{"file_name":"Film A.mkv","index":1},{"file_name":"Film B.mkv","index":2}]`,
+	}
+	targets := StrmTargets(item)
+	if len(targets) != 2 {
+		t.Fatalf("got %d targets, want one per movie file", len(targets))
+	}
+	if targets[0].RawPath != "/videos/Movies/Film A.mkv" || targets[0].RelPath != "Film A/Film A.strm" {
+		t.Errorf("first target = %+v", targets[0])
+	}
+	if targets[1].RawPath != "/videos/Movies/Film B.mkv" || targets[1].RelPath != "Film B/Film B.strm" {
+		t.Errorf("second target = %+v", targets[1])
+	}
+}
+
 func TestFilterShadowedMediaItems(t *testing.T) {
 	items := []model.MediaItem{
-		{MediaType: model.MediaTypeVideo, VideoType: "tv", IsFolder: true, FolderPath: "/videos", FileName: "Show", Episodes: `[{"file_name":"E01.mp4","index":1}]`},
-		{MediaType: model.MediaTypeVideo, FolderPath: "/videos/Show", FileName: "E01.mp4"},
+		{MediaType: model.MediaTypeVideo, VideoType: "tv", IsFolder: true, FolderPath: "/videos", FileName: "Show", Episodes: `[{"file_name":"Season 1/E01.mp4","index":1}]`},
+		{MediaType: model.MediaTypeVideo, FolderPath: "/videos/Show/Season 1", FileName: "E01.mp4"},
 		{MediaType: model.MediaTypeVideo, IsFolder: true, FolderPath: "/videos/Show", FileName: "Season 1"},
 		{MediaType: model.MediaTypeVideo, FolderPath: "/videos/Other", FileName: "Movie.mkv"},
+		{MediaType: model.MediaTypeVideo, IsFolder: true, FolderPath: "/videos/Show", FileName: "Movies"},
 	}
 	path := &model.MediaScanPath{MediaType: model.MediaTypeVideo, PathMerge: true}
 	got := filterShadowedMediaItems(items, path)
-	if len(got) != 2 || got[0].FileName != "Show" || got[1].FileName != "Movie.mkv" {
+	if len(got) != 3 || got[0].FileName != "Show" || got[1].FileName != "Movie.mkv" || got[2].FileName != "Movies" {
 		t.Fatalf("filterShadowedMediaItems() = %#v", got)
 	}
 	if got := filterShadowedMediaItems(items, &model.MediaScanPath{MediaType: model.MediaTypeVideo}); len(got) != len(items) {
 		t.Fatalf("non-merge scan path unexpectedly filtered items: %d", len(got))
+	}
+}
+
+func TestFilterPathMergeMediaItems(t *testing.T) {
+	path := &model.MediaScanPath{MediaType: model.MediaTypeVideo, Path: "/videos", PathMerge: true}
+	items := []model.MediaItem{
+		{MediaType: model.MediaTypeVideo, IsFolder: true, FolderPath: "/videos", FileName: "Show"},
+		{MediaType: model.MediaTypeVideo, FolderPath: "/videos", FileName: "Movie.mkv"},
+		{MediaType: model.MediaTypeVideo, FolderPath: "/videos/Show", FileName: "E01.mkv"},
+	}
+	got := filterPathMergeMediaItems(items, path, map[string]struct{}{
+		"/videos/Show":      {},
+		"/videos/Movie.mkv": {},
+	})
+	if len(got) != 2 || got[0].FileName != "Show" || got[1].FileName != "Movie.mkv" {
+		t.Fatalf("filterPathMergeMediaItems() = %#v", got)
 	}
 }

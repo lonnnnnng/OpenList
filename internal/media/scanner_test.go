@@ -278,10 +278,73 @@ func TestIsInSeasonSiblingGroup(t *testing.T) {
 	}
 }
 
+func TestFilterEpisodesToSeasonDirs(t *testing.T) {
+	episodes, err := json.Marshal([]EpisodeInfo{
+		{FileName: "Season 1/E01.mkv", Index: 1, Season: 1},
+		{FileName: "Season 2/E01.mkv", Index: 1, Season: 2},
+		{FileName: "Movies/Film.mkv", Index: 1, Season: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := filterEpisodesToSeasonDirs(string(episodes), []string{"Season 1", "Season 2"})
+	var filtered []EpisodeInfo
+	if err := json.Unmarshal([]byte(got), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 2 || filtered[0].FileName != "Season 1/E01.mkv" || filtered[1].FileName != "Season 2/E01.mkv" {
+		t.Fatalf("filtered episodes = %+v, want only season folders", filtered)
+	}
+}
+
+func TestLooksLikeTVCollection(t *testing.T) {
+	if !looksLikeTVCollection("Paw Patrol", []EpisodeInfo{
+		{FileName: "E01.mkv"},
+		{FileName: "E02.mkv"},
+	}) {
+		t.Fatal("numbered episode files should identify a TV collection")
+	}
+	if looksLikeTVCollection("W 汪汪队大电影(2023)", []EpisodeInfo{
+		{FileName: "汪汪队1/1.4k.国语.mp4"},
+		{FileName: "汪汪队2/2.2023.1080p.mkv"},
+	}) {
+		t.Fatal("numbered movie parts must not identify a TV collection")
+	}
+	if looksLikeTVCollection("汪汪队1", []EpisodeInfo{
+		{FileName: "1.4k.国语.mp4"},
+		{FileName: "1.4k.英语.mp4"},
+		{FileName: "1.普通话.mp4"},
+	}) {
+		t.Fatal("multiple versions of one numbered movie part must not identify a season")
+	}
+	if !looksLikeTVCollection("小猪佩奇1", []EpisodeInfo{
+		{FileName: "01.mp4"},
+		{FileName: "02.mp4"},
+	}) {
+		t.Fatal("numbered sibling folders with distinct numeric episodes should identify a season")
+	}
+	if !looksLikeTVCollection("精彩集（66集）", []EpisodeInfo{
+		{FileName: "精彩集 -01.mp4"},
+		{FileName: "精彩集 -02.mp4"},
+	}) {
+		t.Fatal("a folder with an explicit episode count should accept numbered episodes")
+	}
+	if looksLikeTVCollection("Films", []EpisodeInfo{
+		{FileName: "Film 2024.mkv"},
+		{FileName: "Film 2025.mkv"},
+	}) {
+		t.Fatal("movie years must not identify a TV collection")
+	}
+}
+
 func TestSeasonDirsWithEmbeddedSeasonNames(t *testing.T) {
 	name := "汪汪队立大功.第9季.4K.国语"
 	if !isSeasonDir(name) || seasonNumberOf(name) != 9 {
 		t.Fatalf("season directory %q was not recognized", name)
+	}
+	name = "Paw.Patrol.S01.1080p【26集】"
+	if !isSeasonDir(name) || seasonNumberOf(name) != 1 {
+		t.Fatalf("embedded Sxx season directory %q was not recognized", name)
 	}
 	ep := buildEpisodeInfo("汪汪队 第9季 第01集 救援行动.mkv")
 	if ep.Season != 9 || ep.Index != 1 {
