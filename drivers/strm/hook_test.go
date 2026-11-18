@@ -41,3 +41,19 @@ func TestCreateLocalDirectoryPreservesExistingPermissions(t *testing.T) {
 		t.Errorf("existing directory permissions = %#o, want %#o", got, 0o700)
 	}
 }
+
+func TestWriteLocalStrmReplacesContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "library", "show", "episode.strm")
+	for _, content := range []string{"first", "second"} {
+		if err := writeLocalStrm(path, []byte(content)); err != nil {
+			t.Fatalf("writeLocalStrm() error = %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read local STRM: %v", err)
+		}
+		if string(got) != content {
+			t.Fatalf("local STRM content = %q, want %q", got, content)
+		}
+	}
+}

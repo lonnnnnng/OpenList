@@ -266,8 +266,6 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 		outRoot = stdpath.Clean("/" + strings.TrimSpace(opts.OutputPath))
 	}
 	written := 0
-	touchedDirs := make(map[string]struct{})
-	defer syncGeneratedStrmDirs(ctx, touchedDirs)
 	allTargets := make([]struct {
 		target StrmTarget
 		item   *model.MediaItem
@@ -319,8 +317,6 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 		if dst == "" {
 			continue
 		}
-		dir := stdpath.Dir(dst)
-		touchedDirs[dir] = struct{}{}
 		if !opts.Overwrite {
 			if _, err := fs.Get(ctx, dst, &fs.GetArgs{NoLog: true}); err == nil {
 				continue
@@ -339,6 +335,9 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 		}
 		if err := fs.PutDirectly(ctx, stdpath.Dir(dst), file, true); err != nil {
 			return written, fmt.Errorf("write %s: %w", dst, err)
+		}
+		if _, err := op.HandleFileContentHook(ctx, dst, data); err != nil {
+			return written, fmt.Errorf("sync local STRM %s: %w", dst, err)
 		}
 		written++
 	}
@@ -381,17 +380,6 @@ func filterShadowedMediaItems(items []model.MediaItem, scanPath *model.MediaScan
 		}
 	}
 	return filtered
-}
-
-func syncGeneratedStrmDirs(ctx context.Context, dirs map[string]struct{}) {
-	for dir := range dirs {
-		objs, err := fs.List(ctx, dir, &fs.ListArgs{Refresh: true, NoLog: true})
-		if err != nil {
-			log.Errorf("[media] refresh STRM output directory %s failed: %v", dir, err)
-			continue
-		}
-		op.HandleObjsUpdateHook(ctx, dir, objs)
-	}
 }
 
 // GenerateStrmForType 按媒体类型（可选扫描路径）批量生成 STRM

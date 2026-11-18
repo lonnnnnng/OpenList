@@ -250,6 +250,61 @@ func getLocalDirsAndFiles(localPath string) ([]string, []string, error) {
 	return files, dirs, nil
 }
 
+func updateLocalStrmContent(_ context.Context, path string, content []byte) (bool, error) {
+	path = utils.FixAndCleanPath(path)
+	handled := false
+	var firstErr error
+	_ = strmTrie.VisitPrefixes(patricia.Prefix(path), func(prefix patricia.Prefix, item patricia.Item) error {
+		needPath := string(prefix)
+		rest := strings.TrimPrefix(path, needPath)
+		if rest != "" && rest[0] != '/' {
+			return nil
+		}
+		for _, d := range item.([]*Strm) {
+			if !d.SaveStrmToLocal {
+				continue
+			}
+			basePath := stdpath.Join(stdpath.Base(needPath), rest)
+			relPath := strings.TrimPrefix(basePath, utils.GetActualMountPath(d.MountPath))
+			localPath := filepath.FromSlash(stdpath.Join(d.SaveStrmLocalPath, relPath))
+			if err := writeLocalStrm(localPath, content); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			handled = true
+		}
+		return nil
+	})
+	return handled, firstErr
+}
+
+func writeLocalStrm(localPath string, content []byte) error {
+	if err := createLocalDirectory(filepath.Dir(localPath)); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(localPath), ".strm-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, localPath)
+}
+
 func init() {
 	op.RegisterObjsUpdateHook(UpdateLocalStrm)
+	op.RegisterFileContentHook(updateLocalStrmContent)
 }

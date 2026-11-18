@@ -17,9 +17,11 @@ import (
 
 // Obj
 type ObjsUpdateHook = func(ctx context.Context, parent string, objs []model.Obj)
+type FileContentHook = func(ctx context.Context, path string, content []byte) (bool, error)
 
 var (
-	objsUpdateHooks = make([]ObjsUpdateHook, 0)
+	objsUpdateHooks  = make([]ObjsUpdateHook, 0)
+	fileContentHooks = make([]FileContentHook, 0)
 )
 
 func RegisterObjsUpdateHook(hook ObjsUpdateHook) {
@@ -30,6 +32,22 @@ func HandleObjsUpdateHook(ctx context.Context, parent string, objs []model.Obj) 
 	for _, hook := range objsUpdateHooks {
 		hook(ctx, parent, objs)
 	}
+}
+
+func RegisterFileContentHook(hook FileContentHook) {
+	fileContentHooks = append(fileContentHooks, hook)
+}
+
+func HandleFileContentHook(ctx context.Context, path string, content []byte) (bool, error) {
+	handled := false
+	for _, hook := range fileContentHooks {
+		matched, err := hook(ctx, path, content)
+		if err != nil {
+			return handled, err
+		}
+		handled = handled || matched
+	}
+	return handled, nil
 }
 
 // Setting
