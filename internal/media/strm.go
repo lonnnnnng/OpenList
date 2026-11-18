@@ -3,6 +3,8 @@ package media
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	stdpath "path"
@@ -266,48 +268,86 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 	written := 0
 	touchedDirs := make(map[string]struct{})
 	defer syncGeneratedStrmDirs(ctx, touchedDirs)
+	allTargets := make([]struct {
+		target StrmTarget
+		item   *model.MediaItem
+	}, 0, len(items))
+	collisions := make(map[string]map[string]struct{})
 	for i := range items {
 		item := &items[i]
 		if item.Hidden {
 			continue
 		}
 		for _, target := range StrmTargets(item) {
-			dst := target.SameDirPath
-			if !opts.SameDir {
-				dst = stdpath.Join(outRoot, target.RelPath)
-				// RelPath 含刮削得到的艺术家/专辑名等外部数据，必须保证不会借 ../ 逃出输出目录
-				if dst != outRoot && !strings.HasPrefix(dst, strings.TrimSuffix(outRoot, "/")+"/") {
-					continue
-				}
+			allTargets = append(allTargets, struct {
+				target StrmTarget
+				item   *model.MediaItem
+			}{target: target, item: item})
+			relPath := target.RelPath
+			if opts.SameDir {
+				relPath = target.SameDirPath
 			}
-			if dst == "" {
-				continue
+			if collisions[relPath] == nil {
+				collisions[relPath] = make(map[string]struct{})
 			}
-			dir := stdpath.Dir(dst)
-			touchedDirs[dir] = struct{}{}
-			if !opts.Overwrite {
-				if _, err := fs.Get(ctx, dst, &fs.GetArgs{NoLog: true}); err == nil {
-					continue
-				}
-			}
-			data := []byte(RenderStrmContent(opts.Template, opts.APIRoot, target.RawPath))
-			file := &stream.FileStream{
-				Ctx: ctx,
-				Obj: &model.Object{
-					Name:     stdpath.Base(dst),
-					Size:     int64(len(data)),
-					Modified: time.Now(),
-				},
-				Reader:   bytes.NewReader(data),
-				Mimetype: "text/plain",
-			}
-			if err := fs.PutDirectly(ctx, stdpath.Dir(dst), file, true); err != nil {
-				return written, fmt.Errorf("write %s: %w", dst, err)
-			}
-			written++
+			collisions[relPath][target.RawPath] = struct{}{}
 		}
 	}
+	for _, entry := range allTargets {
+		target := entry.target
+		relPath := target.RelPath
+		if opts.SameDir {
+			relPath = target.SameDirPath
+		}
+		if len(collisions[relPath]) > 1 {
+			suffix := stableStrmSuffix(target.RawPath)
+			if opts.SameDir {
+				target.SameDirPath = strings.TrimSuffix(target.SameDirPath, ".strm") + " (" + suffix + ").strm"
+			} else {
+				base := stdpath.Base(target.RelPath)
+				target.RelPath = stdpath.Join(stdpath.Dir(target.RelPath), strings.TrimSuffix(base, ".strm")+" ("+suffix+").strm")
+			}
+		}
+		dst := target.SameDirPath
+		if !opts.SameDir {
+			dst = stdpath.Join(outRoot, target.RelPath)
+			// RelPath 含刮削得到的艺术家/专辑名等外部数据，必须保证不会借 ../ 逃出输出目录
+			if dst != outRoot && !strings.HasPrefix(dst, strings.TrimSuffix(outRoot, "/")+"/") {
+				continue
+			}
+		}
+		if dst == "" {
+			continue
+		}
+		dir := stdpath.Dir(dst)
+		touchedDirs[dir] = struct{}{}
+		if !opts.Overwrite {
+			if _, err := fs.Get(ctx, dst, &fs.GetArgs{NoLog: true}); err == nil {
+				continue
+			}
+		}
+		data := []byte(RenderStrmContent(opts.Template, opts.APIRoot, target.RawPath))
+		file := &stream.FileStream{
+			Ctx: ctx,
+			Obj: &model.Object{
+				Name:     stdpath.Base(dst),
+				Size:     int64(len(data)),
+				Modified: time.Now(),
+			},
+			Reader:   bytes.NewReader(data),
+			Mimetype: "text/plain",
+		}
+		if err := fs.PutDirectly(ctx, stdpath.Dir(dst), file, true); err != nil {
+			return written, fmt.Errorf("write %s: %w", dst, err)
+		}
+		written++
+	}
 	return written, nil
+}
+
+func stableStrmSuffix(rawPath string) string {
+	h := sha256.Sum256([]byte(rawPath))
+	return hex.EncodeToString(h[:4])
 }
 
 func filterShadowedMediaItems(items []model.MediaItem, scanPath *model.MediaScanPath) []model.MediaItem {

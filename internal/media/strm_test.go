@@ -1,6 +1,8 @@
 package media
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"path"
 	"testing"
@@ -19,6 +21,19 @@ func TestStrmOptionsForScanPath(t *testing.T) {
 	got = StrmOptionsForScanPath(global, &model.MediaScanPath{})
 	if got != global {
 		t.Fatalf("empty scan path override = %#v, want global options %#v", got, global)
+	}
+}
+
+func TestStableStrmSuffix(t *testing.T) {
+	path := "/cloud/show/Season 1/E01.mp4"
+	first, second := stableStrmSuffix(path), stableStrmSuffix(path)
+	hash := sha256.Sum256([]byte(path))
+	want := hex.EncodeToString(hash[:4])
+	if first != second || first != want || len(first) != 8 {
+		t.Fatalf("stableStrmSuffix() = %q, %q; want stable %q", first, second, want)
+	}
+	if first == stableStrmSuffix("/cloud/other/Season 1/E01.mp4") {
+		t.Fatal("different source paths must have distinct suffixes")
 	}
 }
 
