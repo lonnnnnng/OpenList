@@ -9,6 +9,7 @@ import (
 	"mime"
 	stdpath "path"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -87,12 +88,14 @@ var seasonDirRe = regexp.MustCompile(`(?i)^(第\s*[0-9一二三四五六七八�
 
 // isSeasonDir 判断目录名是否是「季」目录
 func isSeasonDir(name string) bool {
-	return seasonDirRe.MatchString(strings.TrimSpace(name))
+	n := strings.TrimSpace(name)
+	return seasonDirRe.MatchString(n) || seasonEmbeddedCNRe.MatchString(n)
 }
 
 var (
 	// 第N季 / 第十二季
-	seasonCNRe = regexp.MustCompile(`^第\s*([0-9]+|[一二三四五六七八九十两]+)\s*季`)
+	seasonCNRe         = regexp.MustCompile(`^第\s*([0-9]+|[一二三四五六七八九十两]+)\s*季`)
+	seasonEmbeddedCNRe = regexp.MustCompile(`第\s*([0-9]+|[一二三四五六七八九十两]+)\s*季`)
 	// Season 1 / season.02
 	seasonENRe = regexp.MustCompile(`(?i)^season[\s._-]*([0-9]{1,2})`)
 	// S01 / s1（后面不能再跟数字或字母，避免命中 S01E01）
@@ -103,6 +106,12 @@ var (
 func seasonNumberOf(name string) int {
 	n := strings.TrimSpace(name)
 	if m := seasonCNRe.FindStringSubmatch(n); len(m) == 2 {
+		if v := parseLeadingInt(m[1]); v > 0 {
+			return v
+		}
+		return chineseNumber(m[1])
+	}
+	if m := seasonEmbeddedCNRe.FindStringSubmatch(n); len(m) == 2 {
 		if v := parseLeadingInt(m[1]); v > 0 {
 			return v
 		}
@@ -154,12 +163,72 @@ func seasonSubdirs(ctx context.Context, dirPath string) []string {
 		return nil
 	}
 	var out []string
+	dirNames := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() && isSeasonDir(e.GetName()) {
-			out = append(out, e.GetName())
+		if e.IsDir() {
+			dirNames = append(dirNames, e.GetName())
+		}
+	}
+	for _, name := range dirNames {
+		if isSeasonDir(name) || isInSeasonSiblingGroup(name, dirNames) {
+			out = append(out, name)
 		}
 	}
 	return out
+}
+
+func isInSeasonSiblingGroup(name string, siblings []string) bool {
+	prefix, _, ok := numberedSeasonParts(name)
+	if !ok {
+		return false
+	}
+	count := 0
+	for _, sibling := range siblings {
+		otherPrefix, _, otherOK := numberedSeasonParts(sibling)
+		if otherOK && otherPrefix == prefix {
+			count++
+		}
+	}
+	return count >= 2
+}
+
+func numberedSeasonParts(name string) (string, int, bool) {
+	name = strings.TrimSpace(name)
+	match := seasonSuffixRe.FindStringSubmatchIndex(name)
+	if len(match) < 4 || match[2] == match[3] {
+		return "", 0, false
+	}
+	prefix := strings.TrimSpace(name[:match[2]])
+	if prefix == "" {
+		return "", 0, false
+	}
+	hasHan := false
+	for _, r := range prefix {
+		if unicode.Is(unicode.Han, r) {
+			hasHan = true
+			break
+		}
+	}
+	season := parseLeadingInt(name[match[2]:match[3]])
+	return prefix, season, hasHan && season > 0 && season <= 20
+}
+
+func isSeasonSiblingTarget(ctx context.Context, target, scanRoot string) bool {
+	parent := stdpath.Dir(target)
+	if parent == scanRoot || parent == "." || parent == "/" {
+		return false
+	}
+	entries, err := listVFSDir(ctx, parent)
+	if err != nil {
+		return false
+	}
+	var siblings []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			siblings = append(siblings, entry.GetName())
+		}
+	}
+	return isInSeasonSiblingGroup(stdpath.Base(target), siblings)
 }
 
 // promoteSeasonTarget 把「季」目录上移一层到剧名目录。
@@ -426,6 +495,56 @@ func ScanMedia(cfg *model.MediaConfig) {
 	}()
 }
 
+var autoScanStartOnce sync.Once
+
+// StartAutoScanScheduler periodically scans enabled media libraries. Cloud storage
+// providers do not expose a common change notification API, so polling is the
+// portable way to discover newly added files.
+func StartAutoScanScheduler() {
+	autoScanStartOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				interval := setting.GetInt(conf.MediaScanInterval, 0)
+				if interval <= 0 {
+					continue
+				}
+				configs, err := db.GetAllMediaConfigs()
+				if err != nil {
+					log.Errorf("media auto-scan: load configs: %v", err)
+					continue
+				}
+				now := time.Now()
+				for i := range configs {
+					cfg := &configs[i]
+					if !cfg.Enabled {
+						continue
+					}
+					paths, err := db.ListMediaScanPaths(cfg.MediaType)
+					if err != nil {
+						log.Errorf("media auto-scan: load %s paths: %v", cfg.MediaType, err)
+						continue
+					}
+					for i := range paths {
+						path := &paths[i]
+						if !mediaScanDue(path.LastScanAt, now, time.Duration(interval)*time.Minute) {
+							continue
+						}
+						log.Infof("media auto-scan: starting %s path %d (%s)", cfg.MediaType, path.ID, path.Path)
+						ScanMediaPath(path)
+						break
+					}
+				}
+			}
+		}()
+	})
+}
+
+func mediaScanDue(lastScan *time.Time, now time.Time, interval time.Duration) bool {
+	return interval > 0 && (lastScan == nil || now.Sub(*lastScan) >= interval)
+}
+
 // ScanMediaPath 扫描单个扫描路径（异步）
 func ScanMediaPath(sp *model.MediaScanPath) {
 	p, ok := progressMap[sp.MediaType]
@@ -625,6 +744,10 @@ func doScanPath(sp *model.MediaScanPath, p *ScanProgress) error {
 		// 季目录（第一季 / Season 1 / S01）上移到剧名目录：一部剧只入库一条，
 		// 播放时选集里按「第一季 / XX」区分
 		target, promoted := promoteSeasonTarget(target, scanRoot, sp.MediaType, sp.PathMerge)
+		if !promoted && sp.MediaType == model.MediaTypeVideo && sp.PathMerge && isSeasonSiblingTarget(ctx, target, scanRoot) {
+			target = stdpath.Dir(target)
+			promoted = true
+		}
 		if seen[target] {
 			return nil
 		}
@@ -1262,6 +1385,13 @@ func buildMediaItemFromVFS(ctx context.Context, vfsPath string, sp *model.MediaS
 
 // episodeNumRe 匹配文件名开头的数字序号，支持 "1、" "2." "3-" "4 " 等分隔符
 var episodeNumRe = regexp.MustCompile(`^(\d+)[、.\-\s_]+(.*)`)
+var (
+	episodeSxxExxRe = regexp.MustCompile(`(?i)S(\d{1,2})\s*E(\d{1,3})`)
+	episodeCNRe     = regexp.MustCompile(`第\s*(\d{1,3})\s*[集话]`)
+	episodeERe      = regexp.MustCompile(`(?i)(?:^|\b)E(\d{1,3})(?:\b|$)`)
+	episodeTailRe   = regexp.MustCompile(`(\d{1,3})$`)
+	seasonSuffixRe  = regexp.MustCompile(`^(?:.*?)(\d{1,2})(?:季)?(?:续集.*)?$`)
+)
 
 // EpisodeInfo 选集信息（定义在 model 包中，供协议层复用）
 type EpisodeInfo = model.EpisodeInfo
@@ -1271,7 +1401,36 @@ func buildEpisodeInfo(name string) EpisodeInfo {
 	// 去掉扩展名得到裸文件名
 	baseName := strings.TrimSuffix(name, stdpath.Ext(name))
 	ep := EpisodeInfo{FileName: name, Index: 0, Title: baseName}
+	if season := seasonEmbeddedCNRe.FindStringSubmatch(baseName); len(season) == 2 {
+		ep.Season = parseLeadingInt(season[1])
+		if ep.Season == 0 {
+			ep.Season = chineseNumber(season[1])
+		}
+	}
+	if strings.Contains(baseName, "彩蛋") {
+		ep.Season = 0
+	}
 
+	if m := episodeSxxExxRe.FindStringSubmatch(baseName); len(m) == 3 {
+		ep.Season = parseLeadingInt(m[1])
+		ep.Index = parseLeadingInt(m[2])
+		if end := episodeSxxExxRe.FindStringIndex(baseName); end != nil && strings.TrimSpace(baseName[end[1]:]) != "" {
+			ep.Title = strings.TrimSpace(baseName[end[1]:])
+		}
+		return ep
+	}
+	if m := episodeCNRe.FindStringSubmatch(baseName); len(m) == 2 {
+		ep.Index = parseLeadingInt(m[1])
+		ep.Title = strings.TrimSpace(episodeCNRe.ReplaceAllString(baseName, ""))
+		if ep.Title == "" {
+			ep.Title = baseName
+		}
+		return ep
+	}
+	if m := episodeERe.FindStringSubmatch(baseName); len(m) == 2 {
+		ep.Index = parseLeadingInt(m[1])
+		return ep
+	}
 	// 尝试从文件名开头提取数字序号
 	if m := episodeNumRe.FindStringSubmatch(baseName); len(m) == 3 {
 		if idx := parseLeadingInt(m[1]); idx > 0 {
@@ -1285,6 +1444,11 @@ func buildEpisodeInfo(name string) EpisodeInfo {
 			ep.Title = strings.TrimSpace(rest)
 		}
 	}
+	if ep.Index == 0 {
+		if m := episodeTailRe.FindStringSubmatch(baseName); len(m) == 2 {
+			ep.Index = parseLeadingInt(m[1])
+		}
+	}
 	return ep
 }
 
@@ -1296,7 +1460,11 @@ func buildEpisodesFromFolder(ctx context.Context, folderPath string, mediaType m
 }
 
 func buildEpisodesFromFolderWith(ctx context.Context, list listDirFunc, folderPath string, mediaType model.MediaType, recursive bool) (string, error) {
-	var episodes []EpisodeInfo
+	type scannedEpisode struct {
+		info         EpisodeInfo
+		continuation bool
+	}
+	var scanned []scannedEpisode
 
 	// season 记录当前所在季目录的季号，供前端 / Emby 按季分组显示
 	var walk func(dir, rel string, season, depth int) error
@@ -1325,6 +1493,8 @@ func buildEpisodesFromFolderWith(ctx context.Context, list listDirFunc, folderPa
 				subSeason := season
 				if n := seasonNumberOf(name); n > 0 {
 					subSeason = n
+				} else if _, parsed, ok := numberedSeasonParts(name); ok {
+					subSeason = parsed
 				}
 				if err := walk(stdpath.Join(dir, name), subRel, subSeason, depth+1); err != nil {
 					return err
@@ -1335,7 +1505,18 @@ func buildEpisodesFromFolderWith(ctx context.Context, list listDirFunc, folderPa
 				continue
 			}
 			ep := buildEpisodeInfo(name)
-			ep.Season = season
+			epSeason := season
+			if epSeason == 0 {
+				epSeason = ep.Season
+			}
+			if epSeason == 0 && season == 0 {
+				epSeason = 1
+			}
+			if strings.Contains(strings.ToLower(rel), "彩蛋") || strings.Contains(strings.ToLower(name), "彩蛋") {
+				epSeason = 0
+			}
+			ep.Season = epSeason
+			continuation := strings.Contains(rel, "续集")
 			if rel != "" {
 				// 文件在子目录里：file_name 必须带上相对路径。
 				// 播放地址是按 folder_path/file_name/选集.file_name 拼的，
@@ -1343,7 +1524,7 @@ func buildEpisodesFromFolderWith(ctx context.Context, list listDirFunc, folderPa
 				ep.FileName = stdpath.Join(rel, name)
 				ep.Title = rel + " / " + ep.Title
 			}
-			episodes = append(episodes, ep)
+			scanned = append(scanned, scannedEpisode{info: ep, continuation: continuation})
 		}
 		return nil
 	}
@@ -1351,9 +1532,45 @@ func buildEpisodesFromFolderWith(ctx context.Context, list listDirFunc, folderPa
 	if err := walk(folderPath, "", 0, 0); err != nil {
 		return "", err
 	}
-	if len(episodes) == 0 {
+	if len(scanned) == 0 {
 		return "", nil
 	}
+
+	// 常见的「续集」目录从 01 重新编号；将它接到该季最大集号后，避免 STRM 与 Emby 剧集路径冲突。
+	maxBySeason := make(map[int]int)
+	minContinuation := make(map[int]int)
+	for _, ep := range scanned {
+		season, index := ep.info.Season, ep.info.Index
+		if index <= 0 {
+			continue
+		}
+		if ep.continuation && season > 0 {
+			if minContinuation[season] == 0 || index < minContinuation[season] {
+				minContinuation[season] = index
+			}
+			continue
+		}
+		if season > 0 && index > maxBySeason[season] {
+			maxBySeason[season] = index
+		}
+	}
+	episodes := make([]EpisodeInfo, 0, len(scanned))
+	for _, entry := range scanned {
+		if entry.continuation && entry.info.Season > 0 && minContinuation[entry.info.Season] == 1 &&
+			entry.info.Index <= maxBySeason[entry.info.Season] {
+			entry.info.Index += maxBySeason[entry.info.Season]
+		}
+		episodes = append(episodes, entry.info)
+	}
+	sort.SliceStable(episodes, func(i, j int) bool {
+		if episodes[i].Season != episodes[j].Season {
+			return episodes[i].Season < episodes[j].Season
+		}
+		if episodes[i].Index != episodes[j].Index {
+			return episodes[i].Index < episodes[j].Index
+		}
+		return episodes[i].FileName < episodes[j].FileName
+	})
 
 	b, err := json.Marshal(episodes)
 	if err != nil {

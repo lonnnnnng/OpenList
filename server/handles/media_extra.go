@@ -161,13 +161,21 @@ func GenerateMediaStrm(c *gin.Context) {
 		common.ErrorStrResp(c, "未配置 STRM 输出目录", 400)
 		return
 	}
-	n, err := media.GenerateStrmForType(c.Request.Context(), req.MediaType, req.ScanPathID, opts)
+	var n int
+	var err error
+	if req.ScanPathID > 0 {
+		n, err = media.GenerateStrmForScanPath(c.Request.Context(), req.MediaType, req.ScanPathID, opts)
+	} else {
+		n, err = media.GenerateStrmForAllPaths(c.Request.Context(), req.MediaType, opts)
+	}
 	if err != nil {
 		common.ErrorResp(c, err, 500)
 		return
 	}
 	outPath := opts.OutputPath
-	if opts.SameDir {
+	if req.ScanPathID == 0 {
+		outPath = "按各扫描路径配置"
+	} else if opts.SameDir {
 		outPath = "与媒体文件同目录"
 	}
 	common.SuccessResp(c, gin.H{"written": n, "path": outPath})

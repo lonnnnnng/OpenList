@@ -15,6 +15,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/fs"
+	"github.com/OpenListTeam/OpenList/v4/internal/media"
 	"github.com/OpenListTeam/OpenList/v4/internal/transcode"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils"
 	"github.com/OpenListTeam/OpenList/v4/server"
@@ -92,6 +93,7 @@ func Start() {
 	}
 	InitOfflineDownloadTools()
 	LoadStorages()
+	media.StartAutoScanScheduler()
 	InitTaskManager()
 	// 初始化转码模块（总开关关时也会启动 manager，但本地 worker 仅在 enabled 时由 Manager.Start 内部按 run_mode 启动）
 	if transcode.IsEnabled() {

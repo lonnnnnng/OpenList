@@ -202,6 +202,7 @@ const (
 	MediaProxyCover          = "media_proxy_cover"                  // 是否通过服务端代理外部封面（TMDB/豆瓣等）
 	MediaCoverGateway        = "media_cover_gateway"                // 封面代理直连失败时是否回退第三方图片网关（wsrv.nl，默认关闭）
 	MediaStrmOnScan          = "media_strm_on_scan"                 // 扫描完成后自动生成 STRM
+	MediaScanInterval        = "media_scan_interval"                // 媒体扫描周期（分钟，0 关闭）
 	MediaStrmSameDir         = "media_strm_same_dir"                // STRM 是否与媒体文件同目录（同名 .strm）
 	MediaStrmPath            = "media_strm_path"                    // STRM 输出目录（VFS 路径，仅在指定目录模式下使用）
 	MediaStrmOverwrite       = "media_strm_overwrite"               // 生成 STRM 时是否覆盖已存在文件

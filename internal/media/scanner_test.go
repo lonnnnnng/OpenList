@@ -243,25 +243,114 @@ func TestWalkMergeDepthTargetsDeeperLevel(t *testing.T) {
 
 func TestSeasonNumberOf(t *testing.T) {
 	cases := map[string]int{
-		"第一季":        1,
-		"第2季":        2,
-		"第 3 季":      3,
-		"第十季":        10,
-		"第十二季":       12,
-		"第二十一季":      21,
-		"Season 4":   4,
-		"season.05":  5,
-		"S06":        6,
-		"第一季.1080p":  1,
-		"群星":         0,
-		"S01E01":     0,
-		"Specials":   0,
-		"Season 1 -": 1,
+		"第一季":              1,
+		"第2季":              2,
+		"第 3 季":            3,
+		"第十季":              10,
+		"第十二季":             12,
+		"第二十一季":            21,
+		"Season 4":         4,
+		"season.05":        5,
+		"S06":              6,
+		"汪汪队立大功.第9季.4K.国语": 9,
+		"第一季.1080p":        1,
+		"群星":               0,
+		"S01E01":           0,
+		"Specials":         0,
+		"Season 1 -":       1,
 	}
 	for name, want := range cases {
 		if got := seasonNumberOf(name); got != want {
 			t.Fatalf("seasonNumberOf(%q) = %d, want %d", name, got, want)
 		}
+	}
+}
+
+func TestIsInSeasonSiblingGroup(t *testing.T) {
+	if !isInSeasonSiblingGroup("小猪佩奇1", []string{"小猪佩奇1", "小猪佩奇2", "小猪佩奇3", "英语版"}) {
+		t.Fatal("expected numbered sibling directories to form a season group")
+	}
+	if isInSeasonSiblingGroup("电影3", []string{"电影3", "花絮"}) {
+		t.Fatal("a lone numbered folder must not be inferred as a season")
+	}
+	if isInSeasonSiblingGroup("Toy Story 3", []string{"Toy Story 3", "Toy Story 4"}) {
+		t.Fatal("numbered English movie folders must not be inferred as seasons")
+	}
+}
+
+func TestSeasonDirsWithEmbeddedSeasonNames(t *testing.T) {
+	name := "汪汪队立大功.第9季.4K.国语"
+	if !isSeasonDir(name) || seasonNumberOf(name) != 9 {
+		t.Fatalf("season directory %q was not recognized", name)
+	}
+	ep := buildEpisodeInfo("汪汪队 第9季 第01集 救援行动.mkv")
+	if ep.Season != 9 || ep.Index != 1 {
+		t.Fatalf("episode = season %d, index %d; want season 9 episode 1", ep.Season, ep.Index)
+	}
+}
+
+func TestBuildEpisodeInfoCommonNames(t *testing.T) {
+	cases := []struct {
+		name   string
+		season int
+		index  int
+	}{
+		{"E01.mp4", 0, 1},
+		{"01.mkv", 0, 1},
+		{"第02集 女王.mp4", 0, 2},
+		{"Peppa Pig S10E26.mp4", 10, 26},
+		{"《小猪佩奇第九季续集》彩蛋10.mp4", 0, 10},
+	}
+	for _, tc := range cases {
+		ep := buildEpisodeInfo(tc.name)
+		if ep.Season != tc.season || ep.Index != tc.index {
+			t.Errorf("buildEpisodeInfo(%q) = season %d episode %d, want %d/%d", tc.name, ep.Season, ep.Index, tc.season, tc.index)
+		}
+	}
+}
+
+func TestBuildEpisodesInfersSeasonAndContinuedEpisodeNumbers(t *testing.T) {
+	tree := map[string][]string{
+		"/TV/剧":          {"剧1/", "剧1续集（2集）/", "彩蛋/"},
+		"/TV/剧/剧1":       {"E01.mp4", "E02.mp4"},
+		"/TV/剧/剧1续集（2集）": {"01.mp4", "02.mp4"},
+		"/TV/剧/彩蛋":       {"彩蛋01.mp4"},
+	}
+	raw, err := buildEpisodesFromFolderWith(context.Background(), fakeTree(tree), "/TV/剧", model.MediaTypeVideo, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var episodes []EpisodeInfo
+	if err := json.Unmarshal([]byte(raw), &episodes); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][2]int{
+		"剧1/E01.mp4":      {1, 1},
+		"剧1/E02.mp4":      {1, 2},
+		"剧1续集（2集）/01.mp4": {1, 3},
+		"剧1续集（2集）/02.mp4": {1, 4},
+		"彩蛋/彩蛋01.mp4":     {0, 1},
+	}
+	if len(episodes) != len(want) {
+		t.Fatalf("got %d episodes, want %d: %+v", len(episodes), len(want), episodes)
+	}
+	for _, ep := range episodes {
+		got, ok := want[ep.FileName]
+		if !ok || got != [2]int{ep.Season, ep.Index} {
+			t.Errorf("episode %q = season %d episode %d, want %v", ep.FileName, ep.Season, ep.Index, got)
+		}
+	}
+}
+
+func TestMediaScanDue(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-2 * time.Hour)
+	if !mediaScanDue(nil, now, time.Hour) || !mediaScanDue(&old, now, time.Hour) {
+		t.Fatal("new and expired scans should be due")
+	}
+	recent := now.Add(-time.Minute)
+	if mediaScanDue(&recent, now, time.Hour) || mediaScanDue(nil, now, 0) {
+		t.Fatal("recent scans and disabled intervals should not be due")
 	}
 }
 
@@ -384,9 +473,9 @@ func TestBuildEpisodeInfo(t *testing.T) {
 	}{
 		{"01 - 试播集.mkv", 1, "试播集"},
 		{"02.别对我撒谎.mp4", 2, "别对我撒谎"},
-		{"第01集.mkv", 0, "第01集"},   // 中文序号不在解析范围内，保留原名
+		{"第01集.mkv", 1, "第01集"},   // 中文序号
 		{"1080p.mkv", 0, "1080p"}, // 分辨率不能被当成集号
-		{"12.mp4", 0, "12"},       // 整个名字都是数字时没有标题部分
+		{"12.mp4", 12, "12"},      // 整个名字都是数字时没有标题部分
 	}
 	for _, c := range cases {
 		ep := buildEpisodeInfo(c.name)
@@ -415,8 +504,8 @@ func TestWalkMergeFoldersDepthLimit(t *testing.T) {
 
 func TestWalkMergeDepthFiltersExtrasBeforeFallback(t *testing.T) {
 	tree := map[string][]string{
-		"/TV":          {"剧A/"},
-		"/TV/剧A":       {"01.mkv", "Extras/", "Subs/"},
+		"/TV":           {"剧A/"},
+		"/TV/剧A":        {"01.mkv", "Extras/", "Subs/"},
 		"/TV/剧A/Extras": {"trailer.mkv"},
 	}
 	got := collectDepth(t, tree, "/TV", 3)
@@ -427,8 +516,8 @@ func TestWalkMergeDepthFiltersExtrasBeforeFallback(t *testing.T) {
 
 func TestWalkMergeDepthKeepsIntermediateMedia(t *testing.T) {
 	tree := map[string][]string{
-		"/TV":            {"剧A/"},
-		"/TV/剧A":         {"Special.mkv", "Season 1/"},
+		"/TV":             {"剧A/"},
+		"/TV/剧A":          {"Special.mkv", "Season 1/"},
 		"/TV/剧A/Season 1": {"01.mkv"},
 	}
 	got := collectDepth(t, tree, "/TV", 3)

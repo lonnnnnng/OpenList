@@ -14,6 +14,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/db"
 	"github.com/OpenListTeam/OpenList/v4/internal/fs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
+	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/internal/setting"
 	"github.com/OpenListTeam/OpenList/v4/internal/sign"
 	"github.com/OpenListTeam/OpenList/v4/internal/stream"
@@ -191,11 +192,15 @@ func StrmTargets(item *model.MediaItem) []StrmTarget {
 					if num <= 0 {
 						num = i + 1
 					}
+					epSeason := ep.Season
+					if epSeason == 0 && !strings.Contains(ep.Title, "彩蛋") {
+						epSeason = season
+					}
 					epTitle := sanitizeName(ep.Title)
 					epRaw := stdpath.Join(folder, item.FileName, ep.FileName)
 					out = append(out, StrmTarget{
-						RelPath: stdpath.Join(series, fmt.Sprintf("Season %02d", season),
-							fmt.Sprintf("%s S%02dE%02d - %s.strm", series, season, num, epTitle)),
+						RelPath: stdpath.Join(series, fmt.Sprintf("Season %02d", epSeason),
+							fmt.Sprintf("%s S%02dE%02d - %s.strm", series, epSeason, num, epTitle)),
 						RawPath:     epRaw,
 						SameDirPath: strmSibling(epRaw, false),
 					})
@@ -259,6 +264,8 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 		outRoot = stdpath.Clean("/" + strings.TrimSpace(opts.OutputPath))
 	}
 	written := 0
+	touchedDirs := make(map[string]struct{})
+	defer syncGeneratedStrmDirs(ctx, touchedDirs)
 	for i := range items {
 		item := &items[i]
 		if item.Hidden {
@@ -276,6 +283,8 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 			if dst == "" {
 				continue
 			}
+			dir := stdpath.Dir(dst)
+			touchedDirs[dir] = struct{}{}
 			if !opts.Overwrite {
 				if _, err := fs.Get(ctx, dst, &fs.GetArgs{NoLog: true}); err == nil {
 					continue
@@ -301,15 +310,58 @@ func GenerateStrmForItems(ctx context.Context, items []model.MediaItem, opts Str
 	return written, nil
 }
 
+func filterShadowedMediaItems(items []model.MediaItem, scanPath *model.MediaScanPath) []model.MediaItem {
+	if scanPath == nil || scanPath.MediaType != model.MediaTypeVideo || !scanPath.PathMerge {
+		return items
+	}
+	mergedRoots := make([]string, 0)
+	for i := range items {
+		item := &items[i]
+		if item.MediaType != model.MediaTypeVideo || item.VideoType != "tv" || !item.IsFolder || item.Hidden || len(parseEpisodes(item)) == 0 {
+			continue
+		}
+		mergedRoots = append(mergedRoots, stdpath.Join(MediaItemFolder(item), item.FileName))
+	}
+	if len(mergedRoots) == 0 {
+		return items
+	}
+	filtered := make([]model.MediaItem, 0, len(items))
+	for i := range items {
+		item := &items[i]
+		itemPath := stdpath.Join(MediaItemFolder(item), item.FileName)
+		shadowed := false
+		for _, root := range mergedRoots {
+			if itemPath != root && strings.HasPrefix(itemPath, strings.TrimSuffix(root, "/")+"/") {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed {
+			filtered = append(filtered, *item)
+		}
+	}
+	return filtered
+}
+
+func syncGeneratedStrmDirs(ctx context.Context, dirs map[string]struct{}) {
+	for dir := range dirs {
+		objs, err := fs.List(ctx, dir, &fs.ListArgs{Refresh: true, NoLog: true})
+		if err != nil {
+			log.Errorf("[media] refresh STRM output directory %s failed: %v", dir, err)
+			continue
+		}
+		op.HandleObjsUpdateHook(ctx, dir, objs)
+	}
+}
+
 // GenerateStrmForType 按媒体类型（可选扫描路径）批量生成 STRM
 func GenerateStrmForType(ctx context.Context, mediaType model.MediaType, scanPathID uint, opts StrmOptions) (int, error) {
+	if scanPathID > 0 {
+		return GenerateStrmForScanPath(ctx, mediaType, scanPathID, opts)
+	}
 	var items []model.MediaItem
 	var err error
-	if scanPathID > 0 {
-		items, err = db.ListMediaItemsByScanPath(scanPathID)
-	} else {
-		items, err = db.ListAllMediaItems(mediaType)
-	}
+	items, err = db.ListAllMediaItems(mediaType)
 	if err != nil {
 		return 0, err
 	}
@@ -323,6 +375,60 @@ func GenerateStrmForType(ctx context.Context, mediaType model.MediaType, scanPat
 		items = filtered
 	}
 	return GenerateStrmForItems(ctx, items, opts)
+}
+
+// GenerateStrmForAllPaths honors each scan path's STRM output override. Items
+// without a scan path keep using the global STRM settings.
+func GenerateStrmForAllPaths(ctx context.Context, mediaType model.MediaType, opts StrmOptions) (int, error) {
+	paths, err := db.ListMediaScanPaths(mediaType)
+	if err != nil {
+		return 0, err
+	}
+	written := 0
+	pathItemIDs := make(map[uint]struct{}, len(paths))
+	for i := range paths {
+		path := &paths[i]
+		pathItemIDs[path.ID] = struct{}{}
+		items, err := db.ListMediaItemsByScanPath(path.ID)
+		if err != nil {
+			return written, err
+		}
+		pathOpts := StrmOptionsForScanPath(opts, path)
+		if !pathOpts.SameDir && pathOpts.OutputPath == "" {
+			return written, fmt.Errorf("STRM output path is empty for scan path %d", path.ID)
+		}
+		items = filterShadowedMediaItems(filterMediaItems(items, mediaType), path)
+		n, err := GenerateStrmForItems(ctx, items, pathOpts)
+		written += n
+		if err != nil {
+			return written, err
+		}
+	}
+	items, err := db.ListAllMediaItems(mediaType)
+	if err != nil {
+		return written, err
+	}
+	unscoped := make([]model.MediaItem, 0)
+	for _, item := range items {
+		if _, ok := pathItemIDs[item.ScanPathID]; !ok {
+			unscoped = append(unscoped, item)
+		}
+	}
+	n, err := GenerateStrmForItems(ctx, unscoped, opts)
+	return written + n, err
+}
+
+func filterMediaItems(items []model.MediaItem, mediaType model.MediaType) []model.MediaItem {
+	if mediaType == "" {
+		return items
+	}
+	filtered := make([]model.MediaItem, 0, len(items))
+	for _, item := range items {
+		if item.MediaType == mediaType {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 // TriggerStrmOnScanPaths generates STRM files independently for each scanned path.
@@ -341,7 +447,7 @@ func TriggerStrmOnScanPaths(paths []model.MediaScanPath, mediaType model.MediaTy
 			if !opts.SameDir && opts.OutputPath == "" {
 				continue
 			}
-			n, err := GenerateStrmForType(context.Background(), mediaType, path.ID, opts)
+			n, err := GenerateStrmForScanPath(context.Background(), mediaType, path.ID, opts)
 			if err != nil {
 				log.Errorf("[media] generate strm for %s path %d failed: %+v", mediaType, path.ID, err)
 				continue
@@ -349,4 +455,17 @@ func TriggerStrmOnScanPaths(paths []model.MediaScanPath, mediaType model.MediaTy
 			log.Infof("[media] generated %d strm files for %s path %d", n, mediaType, path.ID)
 		}
 	}()
+}
+
+func GenerateStrmForScanPath(ctx context.Context, mediaType model.MediaType, scanPathID uint, opts StrmOptions) (int, error) {
+	path, err := db.GetMediaScanPath(scanPathID)
+	if err != nil {
+		return 0, err
+	}
+	opts = StrmOptionsForScanPath(opts, path)
+	items, err := db.ListMediaItemsByScanPath(scanPathID)
+	if err != nil {
+		return 0, err
+	}
+	return GenerateStrmForItems(ctx, filterShadowedMediaItems(filterMediaItems(items, mediaType), path), opts)
 }

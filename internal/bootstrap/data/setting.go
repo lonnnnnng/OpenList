@@ -299,6 +299,8 @@ func InitialSettings() []model.SettingItem {
 			Help: `封面代理直连失败时，回退到第三方图片网关 wsrv.nl 重试。开启后封面地址会发送给该第三方服务；默认关闭`},
 		{Key: conf.MediaStrmOnScan, Value: "false", Type: conf.TypeBool, Group: model.MEDIA, Flag: model.PRIVATE,
 			Help: `扫描完成后自动把媒体条目生成为 .strm 文件并写入下方目录`},
+		{Key: conf.MediaScanInterval, Value: "0", Type: conf.TypeNumber, Group: model.MEDIA, Flag: model.PRIVATE,
+			Help: `按设定周期自动重扫已启用的媒体库及路径；单位分钟，0 为关闭`},
 		{Key: conf.MediaStrmOverwrite, Value: "true", Type: conf.TypeBool, Group: model.MEDIA, Flag: model.PRIVATE,
 			Help: `生成 STRM 时覆盖已存在的同名文件`},
 		{Key: conf.MediaStrmSameDir, Value: "true", Type: conf.TypeBool, Group: model.MEDIA, Flag: model.PRIVATE,
