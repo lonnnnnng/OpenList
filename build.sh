@@ -609,7 +609,7 @@ MakeRelease() {
     md5FileName=$(echo "$1" | sed 's/\.txt$/-lite.txt/')
   fi
   
-  find . -type f -print0 | xargs -0 md5sum >"$md5FileName"
+  find . -type f ! -name "$md5FileName" -print0 | xargs -0 md5sum >"$md5FileName"
   cat "$md5FileName"
   cd ../..
 }
