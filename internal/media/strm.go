@@ -78,6 +78,15 @@ func DefaultStrmOptions(apiRoot string) StrmOptions {
 	}
 }
 
+// StrmOptionsForScanPath applies a path-specific output directory when configured.
+func StrmOptionsForScanPath(opts StrmOptions, scanPath *model.MediaScanPath) StrmOptions {
+	if scanPath != nil && strings.TrimSpace(scanPath.StrmPath) != "" {
+		opts.OutputPath = strings.TrimSpace(scanPath.StrmPath)
+		opts.SameDir = false
+	}
+	return opts
+}
+
 // RenderStrmContent 渲染 .strm 内容（单行 URL）
 func RenderStrmContent(tpl, apiRoot, rawPath string) string {
 	if tpl == "" {
@@ -316,21 +325,28 @@ func GenerateStrmForType(ctx context.Context, mediaType model.MediaType, scanPat
 	return GenerateStrmForItems(ctx, items, opts)
 }
 
-// TriggerStrmOnScan 扫描结束后按需异步生成 STRM
-func TriggerStrmOnScan(mediaType model.MediaType, apiRoot string) {
+// TriggerStrmOnScanPaths generates STRM files independently for each scanned path.
+func TriggerStrmOnScanPaths(paths []model.MediaScanPath, mediaType model.MediaType, apiRoot string) {
 	if !setting.GetBool(conf.MediaStrmOnScan) {
 		return
 	}
-	opts := DefaultStrmOptions(apiRoot)
-	if !opts.SameDir && opts.OutputPath == "" {
-		return
-	}
+	scanPaths := append([]model.MediaScanPath(nil), paths...)
 	go func() {
-		n, err := GenerateStrmForType(context.Background(), mediaType, 0, opts)
-		if err != nil {
-			log.Errorf("[media] generate strm for %s failed: %+v", mediaType, err)
-			return
+		for i := range scanPaths {
+			path := &scanPaths[i]
+			if path.MediaType != mediaType {
+				continue
+			}
+			opts := StrmOptionsForScanPath(DefaultStrmOptions(apiRoot), path)
+			if !opts.SameDir && opts.OutputPath == "" {
+				continue
+			}
+			n, err := GenerateStrmForType(context.Background(), mediaType, path.ID, opts)
+			if err != nil {
+				log.Errorf("[media] generate strm for %s path %d failed: %+v", mediaType, path.ID, err)
+				continue
+			}
+			log.Infof("[media] generated %d strm files for %s path %d", n, mediaType, path.ID)
 		}
-		log.Infof("[media] generated %d strm files for %s", n, mediaType)
 	}()
 }

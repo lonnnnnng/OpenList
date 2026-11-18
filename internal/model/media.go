@@ -26,6 +26,7 @@ type MediaScanPath struct {
 	MediaType MediaType `gorm:"size:32;index;not null" json:"media_type"` // 所属媒体类型
 	Name      string    `json:"name"`                                     // 路径名称（用于前端筛选显示）
 	Path      string    `gorm:"not null"             json:"path"`         // VFS 扫描路径
+	StrmPath  string    `json:"strm_path"`                                // STRM 输出目录；为空时沿用全局配置
 	PathMerge bool      `gorm:"default:false"        json:"path_merge"`   // 路径合并模式（子文件夹作为一个条目）
 	// MergeDepth 合并模式的固定层级深度（相对扫描根，0 表示自动）。
 	//   0 = 旧行为：逐层向下，第一个「直接包含媒体文件」的文件夹作为一个条目

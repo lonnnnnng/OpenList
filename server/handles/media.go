@@ -103,6 +103,7 @@ type CreateMediaScanPathReq struct {
 	MediaType    model.MediaType `json:"media_type" binding:"required"`
 	Name         string          `json:"name"`
 	Path         string          `json:"path" binding:"required"`
+	StrmPath     string          `json:"strm_path"`
 	PathMerge    bool            `json:"path_merge"`
 	MergeDepth   int             `json:"merge_depth"`
 	TypeTag      string          `json:"type_tag"`
@@ -140,6 +141,7 @@ func CreateMediaScanPath(c *gin.Context) {
 		MediaType:    req.MediaType,
 		Name:         name,
 		Path:         req.Path,
+		StrmPath:     strings.TrimSpace(req.StrmPath),
 		PathMerge:    req.PathMerge,
 		MergeDepth:   clampMergeDepth(req.MergeDepth),
 		TypeTag:      req.TypeTag,
@@ -158,6 +160,7 @@ type UpdateMediaScanPathReq struct {
 	ID           uint   `json:"id" binding:"required"`
 	Name         string `json:"name"`
 	Path         string `json:"path"`
+	StrmPath     string `json:"strm_path"`
 	PathMerge    bool   `json:"path_merge"`
 	MergeDepth   int    `json:"merge_depth"`
 	TypeTag      string `json:"type_tag"`
@@ -179,6 +182,7 @@ func UpdateMediaScanPath(c *gin.Context) {
 	}
 	sp.Name = req.Name
 	sp.Path = req.Path
+	sp.StrmPath = strings.TrimSpace(req.StrmPath)
 	sp.PathMerge = req.PathMerge
 	sp.MergeDepth = clampMergeDepth(req.MergeDepth)
 	sp.TypeTag = req.TypeTag

@@ -149,6 +149,14 @@ func GenerateMediaStrm(c *gin.Context) {
 	apiRoot := common.GetApiUrl(c.Request.Context())
 	media.SetAPIRoot(apiRoot)
 	opts := media.DefaultStrmOptions(apiRoot)
+	if req.ScanPathID > 0 {
+		sp, err := db.GetMediaScanPath(req.ScanPathID)
+		if err != nil {
+			common.ErrorResp(c, err, 404)
+			return
+		}
+		opts = media.StrmOptionsForScanPath(opts, sp)
+	}
 	if !opts.SameDir && opts.OutputPath == "" {
 		common.ErrorStrResp(c, "未配置 STRM 输出目录", 400)
 		return

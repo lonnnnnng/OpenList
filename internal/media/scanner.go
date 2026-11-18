@@ -383,6 +383,7 @@ func ScanMedia(cfg *model.MediaConfig) {
 			return
 		}
 
+		completedPaths := make([]model.MediaScanPath, 0, len(scanPaths))
 		for i := range scanPaths {
 			sp := &scanPaths[i]
 			p.mu.Lock()
@@ -399,6 +400,7 @@ func ScanMedia(cfg *model.MediaConfig) {
 				now := time.Now()
 				sp.LastScanAt = &now
 				_ = db.UpdateMediaScanPath(sp)
+				completedPaths = append(completedPaths, *sp)
 			}
 		}
 
@@ -419,8 +421,8 @@ func ScanMedia(cfg *model.MediaConfig) {
 			_ = db.SaveMediaConfig(cfg)
 		}
 
-		// 按需生成 STRM
-		TriggerStrmOnScan(cfg.MediaType, GetAPIRoot())
+		// Generate STRM using each successfully scanned path's output override.
+		TriggerStrmOnScanPaths(completedPaths, cfg.MediaType, GetAPIRoot())
 	}()
 }
 
@@ -468,6 +470,7 @@ func ScanMediaPath(sp *model.MediaScanPath) {
 			now := time.Now()
 			sp.LastScanAt = &now
 			_ = db.UpdateMediaScanPath(sp)
+			TriggerStrmOnScanPaths([]model.MediaScanPath{*sp}, sp.MediaType, GetAPIRoot())
 		}
 	}()
 }
