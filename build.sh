@@ -284,6 +284,12 @@ BuildRelease() {
   BuildLoongGLIBC ./build/$appName-linux-loong64 abi2.0
 }
 
+BuildReleaseLinuxAMD64() {
+  mkdir -p "build"
+  echo "building for linux-amd64"
+  GOOS=linux GOARCH=amd64 go build -o "./build/$appName-linux-amd64" -ldflags="$ldflags" -tags=jsoniter .
+}
+
 BuildLoongGLIBC() {
   local target_abi="$2"
   local output_file="$1"
@@ -648,12 +654,17 @@ if [ "$buildType" = "dev" ]; then
     BuildDev
   fi
 elif [ "$buildType" = "release" -o "$buildType" = "beta" ]; then
-  if [ "$buildType" = "beta" ]; then
-    FetchWebRolling
-  else
-    FetchWebRelease
+  if [ "$SKIP_WEB_FETCH" != "true" ]; then
+    if [ "$buildType" = "beta" ]; then
+      FetchWebRolling
+    else
+      FetchWebRelease
+    fi
   fi
-  if [ "$dockerType" = "docker" ]; then
+  if [ "$otherParam" = "linux_amd64" ]; then
+    BuildReleaseLinuxAMD64
+    MakeRelease "md5-linux-amd64.txt"
+  elif [ "$dockerType" = "docker" ]; then
     BuildDocker
   elif [ "$dockerType" = "docker-multiplatform" ]; then
     BuildDockerMultiplatform
@@ -721,13 +732,14 @@ elif [ "$buildType" = "zip" ]; then
   fi
 else
   echo -e "Parameter error"
-  echo -e "Usage: $0 {dev|beta|release|zip|prepare} [docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web] [lite] [other_params]"
+  echo -e "Usage: $0 {dev|beta|release|zip|prepare} [linux_amd64|docker|docker-multiplatform|linux_musl_arm|linux_musl|android|freebsd|web] [lite] [other_params]"
   echo -e "Examples:"
   echo -e "  $0 dev"
   echo -e "  $0 dev lite"
   echo -e "  $0 dev docker"
   echo -e "  $0 dev docker lite"
   echo -e "  $0 release"
+  echo -e "  $0 release linux_amd64"
   echo -e "  $0 release lite"
   echo -e "  $0 release docker lite"
   echo -e "  $0 release linux_musl"
