@@ -11,7 +11,7 @@ type Addition struct {
 	OrderBy               string `json:"order_by" type:"select" options:"none,file_type,file_name,updated_at" default:"none"`
 	OrderDirection        string `json:"order_direction" type:"select" options:"asc,desc" default:"asc"`
 	UseTransCodingAddress bool   `json:"use_transcoding_address" help:"You can watch the transcoded video and support 302 redirection" required:"true" default:"false"`
-	MobileRequestURL      string `json:"mobile_request_url" type:"text" required:"false" help:"Sensitive mobile Quark auth URL used for direct 4K playback; refresh it when the mobile session expires"`
+	MobileRequestURL      string `json:"mobile_request_url" type:"text" required:"false" help:"从夸克网盘 App 的抓包中复制 GET https://drive-m.quark.cn/1/clouddrive/time?... 的完整 Request URL，保留问号后的全部参数。不要填写 /file/v2/play 或 /file/video/preview 的 URL。此地址包含登录凭据，请勿分享；失效后重新抓取。"`
 	OnlyListVideoFile     bool   `json:"only_list_video_file" default:"false"`
 	AdditionVersion       int
 }
