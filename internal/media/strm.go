@@ -90,7 +90,7 @@ func RenderStrmContent(tpl, apiRoot, rawPath string) string {
 	}
 	replaced := strings.NewReplacer(
 		"{site_url}", apiRoot,
-		"{path}", utils.EncodePath(p),
+		"{path}", utils.EncodePath(p, true),
 		"{sign}", sign.Sign(rawPath),
 		"{raw_path}", p,
 		"{name}", stdpath.Base(p),

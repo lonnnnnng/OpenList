@@ -9,6 +9,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -137,34 +138,109 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 }
 
 func (d *QuarkOrUC) getTranscodingLink(file model.Obj) (*model.Link, error) {
-	data := base.Json{
-		"fid":         file.GetID(),
-		"resolutions": "low,normal,high,super,2k,4k",
-		"supports":    "fmp4_av,m3u8,dolby_vision",
-	}
 	var resp TranscodingResp
 	ua := d.conf.ua
-
-	_, err := d.request("/file/v2/play/project", http.MethodPost, func(req *resty.Request) {
-		req.SetHeader("User-Agent", ua).
-			SetBody(data)
-	}, &resp)
+	var err error
+	var mobileHeaders http.Header
+	if strings.TrimSpace(d.MobileRequestURL) != "" {
+		data := base.Json{
+			"fid":                   file.GetID(),
+			"resolution":            "",
+			"supports":              "fmp4_av,m3u8,dolby_vision,dolby_low",
+			"support_right":         "trial_1080P_zhizhen",
+			"entrance":              "",
+			"domain":                "0",
+			"scene":                 "0",
+			"fetch_credits_setting": 1,
+			"h265_hw_support_info":  base.Json{"max_width": 4096, "max_height": 4096},
+		}
+		var body []byte
+		body, mobileHeaders, err = d.requestTranscodingWithMobileURL(data)
+		if err == nil {
+			err = utils.Json.Unmarshal(body, &resp)
+		}
+	} else {
+		data := base.Json{
+			"fid":         file.GetID(),
+			"resolutions": "low,normal,high,super,2k,4k",
+			"supports":    "fmp4_av,m3u8,dolby_vision",
+		}
+		_, err = d.request("/file/v2/play/project", http.MethodPost, func(req *resty.Request) {
+			req.SetHeader("User-Agent", ua).
+				SetBody(data)
+		}, &resp)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(d.MobileRequestURL) != "" && mobileHeaders == nil {
+		return nil, errors.New("mobile Quark response did not include required Video-Auth cookie")
 	}
 
 	for _, info := range resp.Data.VideoList {
 		if info.VideoInfo.URL != "" {
-			return &model.Link{
+			link := &model.Link{
 				URL:           info.VideoInfo.URL,
 				ContentLength: info.VideoInfo.Size,
 				Concurrency:   3,
 				PartSize:      10 * utils.MB,
-			}, nil
+			}
+			if mobileHeaders != nil {
+				link.Header = mobileHeaders.Clone()
+			}
+			return link, nil
 		}
 	}
 
 	return nil, errors.New("no link found")
+}
+
+func (d *QuarkOrUC) requestTranscodingWithMobileURL(data base.Json) ([]byte, http.Header, error) {
+	playURL, err := mobileTranscodingURL(d.MobileRequestURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	res, err := base.RestyClient.R().
+		SetHeader("Accept", "application/json, text/plain, */*").
+		SetHeader("Content-Type", "application/json").
+		SetHeader("Referer", "https://pan.quark.cn/").
+		SetHeader("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36").
+		SetBody(data).
+		Post(playURL)
+	if err != nil {
+		return nil, nil, errors.New("mobile Quark transcoding request failed")
+	}
+	if res.IsError() {
+		return nil, nil, fmt.Errorf("mobile Quark transcoding request returned HTTP %d", res.StatusCode())
+	}
+	var headers http.Header
+	for _, cookie := range res.Cookies() {
+		if cookie.Name != "Video-Auth" {
+			continue
+		}
+		headers = make(http.Header)
+		headers.Set("Cookie", cookie.Name+"="+cookie.Value)
+		headers.Set("Referer", "https://pan.quark.cn/")
+		headers.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+		break
+	}
+	return res.Body(), headers, nil
+}
+
+func mobileTranscodingURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host != "drive-m.quark.cn" || u.User != nil || !strings.HasPrefix(u.Path, "/1/clouddrive/") {
+		return "", errors.New("mobile request URL must be an HTTPS drive-m.quark.cn clouddrive URL")
+	}
+	q := u.Query()
+	for _, key := range []string{"kps", "sign", "vcode", "ut"} {
+		if q.Get(key) == "" {
+			return "", fmt.Errorf("mobile request URL is missing %s", key)
+		}
+	}
+	u.Path = "/1/clouddrive/file/v2/play"
+	u.RawPath = ""
+	return u.String(), nil
 }
 
 func (d *QuarkOrUC) upPre(file model.FileStreamer, parentId string) (UpPreResp, error) {
