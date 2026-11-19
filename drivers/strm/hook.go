@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/embyrefresh"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/internal/stream"
@@ -273,6 +274,7 @@ func updateLocalStrmContent(_ context.Context, path string, content []byte) (boo
 				}
 				continue
 			}
+			embyrefresh.NotifyStrmCreated(localPath)
 			handled = true
 		}
 		return nil

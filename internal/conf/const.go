@@ -207,6 +207,8 @@ const (
 	MediaStrmPath            = "media_strm_path"                    // STRM 输出目录（VFS 路径，仅在指定目录模式下使用）
 	MediaStrmOverwrite       = "media_strm_overwrite"               // 生成 STRM 时是否覆盖已存在文件
 	MediaStrmTemplate        = "media_strm_template"                // STRM 内容模板
+	MediaEmbyRefreshURL      = "media_emby_refresh_url"             // Emby API 基础地址（用于通知新增 STRM）
+	MediaEmbyRefreshAPIKey   = "media_emby_refresh_api_key"         // Emby API Key（用于通知新增 STRM）
 
 	// transcode (云端/本地 FFmpeg 转码)
 	TranscodeEnabled            = "transcode_enabled"              // 总开关，默认关

@@ -309,6 +309,10 @@ func InitialSettings() []model.SettingItem {
 			Help: `STRM 输出目录（VFS 路径，需位于可写存储中），仅在关闭「与媒体文件同目录」时使用`},
 		{Key: conf.MediaStrmTemplate, Value: "{site_url}/d{path}?sign={sign}", Type: conf.TypeString, Group: model.MEDIA, Flag: model.PRIVATE,
 			Help: `STRM 内容模板，可用变量：{site_url} 站点地址、{path} 文件虚拟路径、{sign} 签名、{name} 文件名`},
+		{Key: conf.MediaEmbyRefreshURL, Value: "", Type: conf.TypeString, Group: model.MEDIA, Flag: model.PRIVATE,
+			Help: `Emby API 基础地址，例如 http://192.168.1.2:8096/emby；STRM 写入本地镜像后通知 Emby 增量刷新。留空时关闭`},
+		{Key: conf.MediaEmbyRefreshAPIKey, Value: "", Type: conf.TypeString, Group: model.MEDIA, Flag: model.PRIVATE,
+			Help: `Emby 管理员 API Key；仅用于向 Emby 报告新建的 STRM 文件路径`},
 
 		// transcode settings (FFmpeg 云端/本地转码) - 默认全部关闭
 		{Key: conf.TranscodeEnabled, Value: "false", Type: conf.TypeBool, Group: model.TRANSCODE, Flag: model.PRIVATE,
