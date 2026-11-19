@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
@@ -50,5 +51,30 @@ func TestProxyOverridesUpstreamContentDisposition(t *testing.T) {
 	}
 	if got, want := recorder.Body.String(), content; got != want {
 		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
+func TestCloudHLSRedirectKeepsCredentialsOnServer(t *testing.T) {
+	old := conf.Conf
+	conf.Conf = conf.DefaultConfig(t.TempDir())
+	conf.Conf.SiteURL = "https://media.example/openlist"
+	t.Cleanup(func() { conf.Conf = old })
+	link := &model.Link{
+		HLS: &model.HLSSource{URL: "https://video.drive.uc.cn/media.m3u8?secret=hidden", Header: http.Header{"Cookie": {"login=hidden"}}},
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://localhost/d/video.mp4", nil)
+	if err := Proxy(w, r, link, &model.Object{Name: "video.mp4", Size: 100000}); err != nil {
+		t.Fatal(err)
+	}
+	location := w.Header().Get("Location")
+	if w.Code != 302 || !strings.HasPrefix(location, "https://media.example/openlist/hls/") || !strings.HasSuffix(location, "/index.m3u8") || strings.Contains(location, "hidden") {
+		t.Fatalf("invalid local playlist redirect: %d %s", w.Code, location)
+	}
+	if ProxyRange(r.Context(), link, 100000) != link {
+		t.Fatal("HLS was converted into an original-file byte range reader")
+	}
+	if link.Clone().HLS != link.HLS {
+		t.Fatal("cloning lost the HLS source")
 	}
 }

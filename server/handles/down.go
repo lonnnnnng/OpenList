@@ -77,6 +77,14 @@ func Proxy(c *gin.Context) {
 
 func redirect(c *gin.Context, link *model.Link) {
 	defer link.Close()
+	// Authenticated cloud HLS always needs the playlist/segment proxy, even
+	// when the storage's ordinary file download policy is a 302 redirect.
+	if link.HLS != nil {
+		if err := common.Proxy(c.Writer, c.Request, link, nil); err != nil {
+			common.ErrorPage(c, err, 500)
+		}
+		return
+	}
 	var err error
 	c.Header("Referrer-Policy", "no-referrer")
 	c.Header("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate")

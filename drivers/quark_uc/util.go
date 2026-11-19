@@ -26,6 +26,8 @@ import (
 // do others that not defined in Driver interface
 
 func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
+	d.apiMu.Lock()
+	defer d.apiMu.Unlock()
 	u := d.conf.api + pathname
 	req := base.RestyClient.R()
 	req.SetHeaders(map[string]string{
@@ -46,6 +48,17 @@ func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCal
 	res, err := req.Execute(method, u)
 	if err != nil {
 		return nil, err
+	}
+	if d.config.Name == "UC" {
+		var status struct {
+			Code *int `json:"code"`
+		}
+		if res.IsError() || utils.Json.Unmarshal(res.Body(), &status) != nil || status.Code == nil {
+			return nil, fmt.Errorf("UC API returned an invalid response (HTTP %d); check the Cookie", res.StatusCode())
+		}
+		if *status.Code != 0 {
+			return nil, fmt.Errorf("UC API failed (code=%d); check the Cookie and file permissions", *status.Code)
+		}
 	}
 	__puus := cookie.GetCookie(res.Cookies(), "__puus")
 	if __puus != nil {
@@ -124,11 +137,17 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(resp.Data) == 0 || resp.Data[0].DownloadUrl == "" {
+		return nil, errors.New("cloud drive did not return a download URL")
+	}
+	d.apiMu.Lock()
+	loginCookie := d.Cookie
+	d.apiMu.Unlock()
 
 	return &model.Link{
 		URL: resp.Data[0].DownloadUrl,
 		Header: http.Header{
-			"Cookie":     []string{d.Cookie},
+			"Cookie":     []string{loginCookie},
 			"Referer":    []string{d.conf.referer},
 			"User-Agent": []string{ua},
 		},

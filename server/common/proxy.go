@@ -9,6 +9,7 @@ import (
 
 	"maps"
 
+	"github.com/OpenListTeam/OpenList/v4/internal/cloudhls"
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/net"
@@ -18,6 +19,15 @@ import (
 )
 
 func Proxy(w http.ResponseWriter, r *http.Request, link *model.Link, file model.Obj) error {
+	if link.HLS != nil {
+		playlist, err := cloudhls.Default().Open(link.HLS, GetApiUrlFromRequest(r)+"/hls")
+		if err != nil {
+			return err
+		}
+		w.Header().Set("Cache-Control", "private, no-store")
+		http.Redirect(w, r, playlist, http.StatusFound)
+		return nil
+	}
 	// if link.MFile != nil {
 	// 	attachHeader(w, file, link)
 	// 	http.ServeContent(w, r, file.GetName(), file.ModTime(), link.MFile)
@@ -99,6 +109,9 @@ func GetEtag(file model.Obj, size int64) string {
 }
 
 func ProxyRange(ctx context.Context, link *model.Link, size int64) *model.Link {
+	if link.HLS != nil {
+		return link
+	}
 	if link.RangeReader == nil && !strings.HasPrefix(link.URL, GetApiUrl(ctx)+"/") {
 		if link.ContentLength > 0 {
 			size = link.ContentLength

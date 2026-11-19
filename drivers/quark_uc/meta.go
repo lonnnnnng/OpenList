@@ -13,6 +13,7 @@ type Addition struct {
 	UseTransCodingAddress bool   `json:"use_transcoding_address" help:"You can watch the transcoded video and support 302 redirection" required:"true" default:"false"`
 	MobileRequestURL      string `json:"mobile_request_url" type:"text" required:"false" help:"从夸克网盘 App 的抓包中复制 GET https://drive-m.quark.cn/1/clouddrive/time?... 的完整 Request URL，保留问号后的全部参数。不要填写 /file/v2/play 或 /file/video/preview 的 URL。此地址包含登录凭据，请勿分享；失效后重新抓取。"`
 	OnlyListVideoFile     bool   `json:"only_list_video_file" default:"false"`
+	UCResolution          string `json:"uc_resolution" type:"select" options:"auto,low,high,super,2k,4k" default:"auto" help:"UC 转码清晰度：auto 选择当前账号可用的最高画质。指定画质不可用时会报错，请切回 auto。转码播放需要 OpenList 代理清单与分片。"`
 	AdditionVersion       int
 }
 

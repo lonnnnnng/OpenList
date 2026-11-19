@@ -3,9 +3,12 @@ package quark
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"hash"
 	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/OpenListTeam/OpenList/v4/drivers/base"
@@ -23,6 +26,7 @@ type QuarkOrUC struct {
 	Addition
 	config driver.Config
 	conf   Conf
+	apiMu  sync.Mutex
 }
 
 func (d *QuarkOrUC) Config() driver.Config {
@@ -34,7 +38,25 @@ func (d *QuarkOrUC) GetAddition() driver.Additional {
 }
 
 func (d *QuarkOrUC) Init(ctx context.Context) error {
-	_, err := d.request("/config", http.MethodGet, nil, nil)
+	endpoint := "/config"
+	var callback base.ReqCallback
+	if d.config.Name == "UC" {
+		if err := validateUCResolution(d.UCResolution); err != nil {
+			return err
+		}
+		d.Cookie = strings.TrimSpace(d.Cookie)
+		if len(d.Cookie) >= 7 && strings.EqualFold(d.Cookie[:7], "cookie:") {
+			d.Cookie = strings.TrimSpace(d.Cookie[7:])
+		}
+		if d.Cookie == "" || strings.ContainsAny(d.Cookie, "\r\n") {
+			return fmt.Errorf("UC requires the complete login Cookie on one line; join multiple Cookie headers with semicolons")
+		}
+		endpoint = "/file/sort"
+		callback = func(req *resty.Request) {
+			req.SetContext(ctx).SetQueryParams(map[string]string{"pdir_fid": d.RootFolderID, "_page": "1", "_size": "1"})
+		}
+	}
+	_, err := d.request(endpoint, http.MethodGet, callback, nil)
 	if err == nil {
 		if d.AdditionVersion != 2 {
 			d.AdditionVersion = 2
@@ -62,12 +84,26 @@ func (d *QuarkOrUC) List(ctx context.Context, dir model.Obj, args model.ListArgs
 
 func (d *QuarkOrUC) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
 	f := file.(*File)
+	if d.IsHLS(file) {
+		source, err := d.ucHLSSource(ctx, file.GetID(), d.UCResolution)
+		if err != nil {
+			return nil, err
+		}
+		exp := 5 * time.Minute
+		return &model.Link{URL: source.URL, HLS: source, Expiration: &exp}, nil
+	}
 
 	if d.UseTransCodingAddress && d.config.Name == "Quark" && f.Category == 1 && f.Size > 0 {
 		return d.getTranscodingLink(file)
 	}
 
 	return d.getDownloadLink(file)
+}
+
+func (d *QuarkOrUC) IsHLS(file model.Obj) bool {
+	file = model.UnwrapObjName(file)
+	f, ok := file.(*File)
+	return ok && d.config.Name == "UC" && d.UseTransCodingAddress && f.Category == 1 && f.Size > 0 && !f.IsDir()
 }
 
 func (d *QuarkOrUC) MakeDir(ctx context.Context, parentDir model.Obj, dirName string) error {

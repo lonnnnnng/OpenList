@@ -39,6 +39,11 @@ type Reader interface {
 	Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error)
 }
 
+// HLSReader identifies cloud HLS before a browser chooses its decoder.
+type HLSReader interface {
+	IsHLS(file model.Obj) bool
+}
+
 type GetRooter interface {
 	GetRoot(ctx context.Context) (model.Obj, error)
 }

@@ -71,18 +71,14 @@ func (p *probeLimiter) release(owner string) {
 // 播放端：/api/transcode/play  发起或复用一个转码任务
 // ============================================================
 
-// TranscodePlay 入口：POST /api/fs/transcode  body: {path}
+// TranscodePlay 入口：POST /api/fs/transcode/play  body: {path}
 //
 // 行为：
-//  1. 检查 transcode_enabled
-//  2. fs.Get 获取文件并跑 Decide
-//  3. 不需要转码 → 返回 {transcode:false, direct: true}
-//  4. 需要转码 → 创建 Job 入队，返回 {transcode:true, job_id, master_url}
+//  1. 校验访问权限并获取文件
+//  2. 云端 HLS → 返回播放器可访问的签名入口，不启动本地转码
+//  3. 本地转码关闭或不需要转码 → 返回 {transcode:false, reason}
+//  4. 需要本地转码 → 创建 Job 入队，返回 {transcode:true, job_id, master_url}
 func TranscodePlay(c *gin.Context) {
-	if !transcode.IsEnabled() {
-		common.SuccessResp(c, gin.H{"transcode": false, "reason": "disabled"})
-		return
-	}
 	var req struct {
 		Path string `json:"path" binding:"required"`
 	}
@@ -108,6 +104,20 @@ func TranscodePlay(c *gin.Context) {
 	}
 	if obj.IsDir() {
 		common.ErrorStrResp(c, "path is a directory", 400)
+		return
+	}
+	storage, err := fs.GetStorage(req.Path, &fs.GetStoragesArgs{})
+	if err == nil {
+		if hls, ok := storage.(driver.HLSReader); ok && hls.IsHLS(obj) {
+			common.SuccessResp(c, gin.H{
+				"transcode": true, "reason": "cloud_hls", "profile": "cloud",
+				"master_url": SignedStreamURLWithBase(common.GetPlaybackBase(c.Request), req.Path),
+			})
+			return
+		}
+	}
+	if !transcode.IsEnabled() {
+		common.SuccessResp(c, gin.H{"transcode": false, "reason": "disabled"})
 		return
 	}
 	dec := transcode.Decide(transcode.DecideRequest{

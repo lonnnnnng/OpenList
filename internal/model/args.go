@@ -29,6 +29,7 @@ type Link struct {
 	URL         string        `json:"url"`    // most common way
 	Header      http.Header   `json:"header"` // needed header (for url)
 	RangeReader RangeReaderIF `json:"-"`      // recommended way if can't use URL
+	HLS         *HLSSource    `json:"-"`      // authenticated cloud HLS, proxied per resource
 
 	Expiration *time.Duration // local cache expiration; not transferred by Clone
 
@@ -48,12 +49,21 @@ func (l *Link) Clone() *Link {
 		URL:              l.URL,
 		Header:           l.Header,
 		RangeReader:      l.RangeReader,
+		HLS:              l.HLS,
 		Concurrency:      l.Concurrency,
 		PartSize:         l.PartSize,
 		ContentLength:    l.ContentLength,
 		SyncClosers:      utils.NewSyncClosers(l),
 		RequireReference: l.RequireReference,
 	}
+}
+
+// HLSSource keeps provider credentials on the server. Refresh obtains new
+// signed URLs when a playlist or segment rejects an expired playback session.
+type HLSSource struct {
+	URL     string
+	Header  http.Header
+	Refresh func(context.Context) (*HLSSource, error)
 }
 
 type OtherArgs struct {

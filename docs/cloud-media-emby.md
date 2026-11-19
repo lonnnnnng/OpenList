@@ -4,6 +4,8 @@
 
 百度网盘的 Cookie 登录、302 播放与本地 STRM 输出配置见 [百度网盘接入说明](baidu-media-emby.md)。
 
+UC 网盘的 Cookie 配置、HLS 代理播放与独立 STRM 输出配置见 [UC 网盘接入说明](uc-media-emby.md)。
+
 ## 当前状态
 
 | 项目 | 夸克网盘 | 阿里云盘 |
