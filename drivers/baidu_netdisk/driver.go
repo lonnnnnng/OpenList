@@ -34,11 +34,18 @@ type BaiduNetdisk struct {
 
 	uploadThread int
 	vipType      int // 会员类型，0普通用户(4G/4M)、1普通会员(10G/16M)、2超级会员(20G/32M)
+	webClient    *http.Client
 }
 
 var ErrUploadIDExpired = errors.New("uploadid expired")
 
 func (d *BaiduNetdisk) Config() driver.Config {
+	if d.cookieAuth() {
+		cfg := config
+		cfg.PreferProxy = false
+		cfg.NoUpload = true
+		return cfg
+	}
 	return config
 }
 
@@ -47,6 +54,15 @@ func (d *BaiduNetdisk) GetAddition() driver.Additional {
 }
 
 func (d *BaiduNetdisk) Init(ctx context.Context) error {
+	if d.cookieAuth() {
+		return d.initWeb(ctx)
+	}
+	if d.AuthType != "" && d.AuthType != "oauth" {
+		return errors.New("unsupported Baidu authentication type")
+	}
+	if strings.TrimSpace(d.RefreshToken) == "" {
+		return errors.New("refresh_token is required for OAuth login; select Cookie login to use a web Cookie")
+	}
 	d.uploadThread, _ = strconv.Atoi(d.UploadThread)
 	if d.uploadThread < 1 {
 		d.uploadThread, d.UploadThread = 1, "1"
@@ -70,11 +86,20 @@ func (d *BaiduNetdisk) Init(ctx context.Context) error {
 }
 
 func (d *BaiduNetdisk) Drop(ctx context.Context) error {
+	if d.webClient != nil {
+		d.webClient.CloseIdleConnections()
+	}
 	return nil
 }
 
 func (d *BaiduNetdisk) List(ctx context.Context, dir model.Obj, args model.ListArgs) ([]model.Obj, error) {
-	files, err := d.getFiles(dir.GetPath())
+	var files []File
+	var err error
+	if d.cookieAuth() {
+		files, err = d.getWebFiles(ctx, dir.GetPath())
+	} else {
+		files, err = d.getFiles(dir.GetPath())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +109,9 @@ func (d *BaiduNetdisk) List(ctx context.Context, dir model.Obj, args model.ListA
 }
 
 func (d *BaiduNetdisk) Link(ctx context.Context, file model.Obj, args model.LinkArgs) (*model.Link, error) {
+	if d.cookieAuth() {
+		return d.linkWeb(ctx, file)
+	}
 	switch d.DownloadAPI {
 	case "crack":
 		return d.linkCrack(file, args)
@@ -162,6 +190,9 @@ func (d *BaiduNetdisk) Remove(ctx context.Context, obj model.Obj) error {
 }
 
 func (d *BaiduNetdisk) PutRapid(ctx context.Context, dstDir model.Obj, stream model.FileStreamer) (model.Obj, error) {
+	if d.cookieAuth() {
+		return nil, errs.NotSupport
+	}
 	contentMd5 := stream.GetHash().GetHash(utils.MD5)
 	if len(contentMd5) < utils.MD5.Width {
 		return nil, errors.New("invalid hash")
@@ -189,6 +220,9 @@ func (d *BaiduNetdisk) PutRapid(ctx context.Context, dstDir model.Obj, stream mo
 // **注意**: 截至 2024/04/20 百度云盘 api 接口返回的时间永远是当前时间，而不是文件时间。
 // 而实际上云盘存储的时间是文件时间，所以此处需要覆盖时间，保证缓存与云盘的数据一致
 func (d *BaiduNetdisk) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) (model.Obj, error) {
+	if d.cookieAuth() {
+		return nil, errs.NotSupport
+	}
 	// 百度网盘不允许上传空文件
 	if stream.GetSize() < 1 {
 		return nil, ErrBaiduEmptyFilesNotAllowed
@@ -490,6 +524,9 @@ func (d *BaiduNetdisk) uploadSlice(ctx context.Context, uploadUrl string, params
 }
 
 func (d *BaiduNetdisk) GetDetails(ctx context.Context) (*model.StorageDetails, error) {
+	if d.cookieAuth() {
+		return nil, errs.NotImplement
+	}
 	du, err := d.quota(ctx)
 	if err != nil {
 		return nil, err

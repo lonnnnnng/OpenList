@@ -95,6 +95,10 @@ func (d *BaiduNetdisk) _refreshToken() error {
 }
 
 func (d *BaiduNetdisk) request(furl string, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
+	// Cookie mode is read-only and must never fall through to OAuth endpoints.
+	if d.cookieAuth() {
+		return nil, errs.NotSupport
+	}
 	var result []byte
 	err := retry.Do(func() error {
 		req := base.RestyClient.R()

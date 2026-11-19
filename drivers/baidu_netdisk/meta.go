@@ -9,6 +9,8 @@ import (
 
 type Addition struct {
 	driver.RootPath
+	AuthType              string `json:"auth_type" type:"select" options:"oauth,cookie" default:"oauth" help:"OAuth 使用刷新令牌；Cookie 使用百度网盘网页登录态，支持浏览、播放和媒体扫描，不支持上传或修改云盘文件。"`
+	Cookie                string `json:"cookie" type:"text" help:"选择 Cookie 登录时，登录 pan.baidu.com，打开浏览器开发者工具的网络面板，复制 /api/list 请求头中完整的 Cookie 值。不要填写 Request URL、bdstoken 或 refresh_token；失效后重新复制。"`
 	OrderBy               string `json:"order_by" type:"select" options:"name,time,size" default:"name"`
 	OrderDirection        string `json:"order_direction" type:"select" options:"asc,desc" default:"asc"`
 	DownloadAPI           string `json:"download_api" type:"select" options:"official,crack,crack_video" default:"official"`
@@ -18,7 +20,7 @@ type Addition struct {
 	ClientSecret          string `json:"client_secret"`
 	CustomCrackUA         string `json:"custom_crack_ua" required:"true" default:"netdisk"`
 	AccessToken           string
-	RefreshToken          string `json:"refresh_token" required:"true"`
+	RefreshToken          string `json:"refresh_token" help:"仅 OAuth 登录方式需要刷新令牌；Cookie 登录方式留空。"`
 	UploadThread          string `json:"upload_thread" default:"3" help:"1<=thread<=32"`
 	UploadSliceTimeout    int    `json:"upload_timeout" type:"number" default:"60" help:"per-slice upload timeout in seconds"`
 	UploadAPI             string `json:"upload_api" default:"https://d.pcs.baidu.com"`
