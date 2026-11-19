@@ -118,6 +118,7 @@ OpenList 是一个由 OpenList 团队独立维护的开源项目，遵循 AGPL-3
 ## 文档
 
 - 📘 [文档](https://doc.oplist.org)
+- [夸克与阿里云盘 STRM 入库 Emby 链路说明](../docs/cloud-media-emby.md)
 - 🌏 [中国镜像](https://doc.oplist.org.cn)
 - ⚖️ [使用条款](https://doc.oplist.org/terms)
 - 🔒 [隐私政策](https://doc.oplist.org/privacy)
